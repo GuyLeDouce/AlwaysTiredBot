@@ -1,7 +1,7 @@
 {
   "name": "sleepy-bot",
   "version": "1.0.0",
-  "description": "A Discord bot for displaying random Always Tired NFTs",
+  "description": "A Discord bot that shows Always Tired NFTs from your wallet",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,5 +9,8 @@
   "dependencies": {
     "discord.js": "^14.11.0",
     "node-fetch": "^2.6.7"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
