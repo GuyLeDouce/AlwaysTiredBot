@@ -127,7 +127,7 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // !sleepy[TOKEN_ID] - show any Sleepy by ID (no wallet required)
+  // !sleepy[TOKEN_ID] - show any Sleepy with rarity (fallback to image only if needed)
   if (command.startsWith('sleepy') && command !== 'sleepy' && command !== 'mysleepys') {
     const tokenId = command.replace('sleepy', '');
 
@@ -136,14 +136,33 @@ client.on('messageCreate', async (message) => {
     }
 
     const imgUrl = `${IMAGE_BASE}/${tokenId}.jpg`;
+    const rarityApiUrl = `https://api-mainnet.magiceden.dev/v2/eth/tokens/${SLEEPY_CONTRACT}/${tokenId}`;
 
-    return message.reply({
-      content: `Token ID: ${tokenId}`,
-      files: [{
-        attachment: imgUrl,
-        name: `sleepy-${tokenId}.jpg`
-      }]
-    });
+    try {
+      const res = await fetch(rarityApiUrl);
+      const data = await res.json();
+
+      if (data.rank && data.rarityScore) {
+        return message.reply({
+          content: `Token ID: ${tokenId}\nRank: #${data.rank}\nRarity Score: ${data.rarityScore}`,
+          files: [{
+            attachment: imgUrl,
+            name: `sleepy-${tokenId}.jpg`
+          }]
+        });
+      } else {
+        throw new Error('Rarity not found');
+      }
+    } catch (err) {
+      console.warn(`⚠️ Could not fetch rarity for Sleepy #${tokenId}. Showing image only.`);
+      return message.reply({
+        content: `Token ID: ${tokenId}`,
+        files: [{
+          attachment: imgUrl,
+          name: `sleepy-${tokenId}.jpg`
+        }]
+      });
+    }
   }
 });
 
