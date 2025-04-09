@@ -6,6 +6,7 @@ const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
 
 const SLEEPY_CONTRACT = '0x3CCBd9C381742c04D81332b5db461951672F6A99';
+const IMAGE_BASE = 'https://ipfs.io/ipfs/bafybeigqhrsckizhwjow3dush4muyawn7jud2kbmy3akzxyby457njyr5e';
 
 const client = new Client({
   intents: [
@@ -41,7 +42,7 @@ client.on('messageCreate', async (message) => {
     return message.reply(`✅ Wallet linked: ${address}`);
   }
 
-  // !sleepy - random Always Tired NFT
+  // !sleepy - random NFT from linked wallet
   if (command === 'sleepy') {
     const wallet = walletLinks[message.author.id];
     if (!wallet) {
@@ -67,7 +68,7 @@ client.on('messageCreate', async (message) => {
 
       const tokenArray = Array.from(owned);
       const randomToken = tokenArray[Math.floor(Math.random() * tokenArray.length)];
-      const imgUrl = `https://ipfs.io/ipfs/bafybeigqhrsckizhwjow3dush4muyawn7jud2kbmy3akzxyby457njyr5e/${randomToken}.jpg`;
+      const imgUrl = `${IMAGE_BASE}/${randomToken}.jpg`;
 
       return message.reply({
         content: `Token ID: ${randomToken}`,
@@ -83,7 +84,7 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // !mysleepys - show up to 10 Always Tired NFTs
+  // !mysleepys - list up to 10 owned
   if (command === 'mysleepys') {
     const wallet = walletLinks[message.author.id];
     if (!wallet) {
@@ -112,7 +113,7 @@ client.on('messageCreate', async (message) => {
 
       const limitedTokens = tokenArray.slice(0, 10);
       const files = limitedTokens.map((tokenId) => ({
-        attachment: `https://ipfs.io/ipfs/bafybeigqhrsckizhwjow3dush4muyawn7jud2kbmy3akzxyby457njyr5e/${tokenId}.jpg`,
+        attachment: `${IMAGE_BASE}/${tokenId}.jpg`,
         name: `sleepy-${tokenId}.jpg`
       }));
 
@@ -124,6 +125,25 @@ client.on('messageCreate', async (message) => {
       console.error(err);
       return message.reply('⚠️ Error fetching your Sleepys. Please try again later.');
     }
+  }
+
+  // !sleepy[TOKEN_ID] - show any Sleepy by ID (no wallet required)
+  if (command.startsWith('sleepy') && command !== 'sleepy' && command !== 'mysleepys') {
+    const tokenId = command.replace('sleepy', '');
+
+    if (!/^\d+$/.test(tokenId)) {
+      return message.reply('❌ Please enter a valid token number after `!sleepy` (e.g. `!sleepy142`)');
+    }
+
+    const imgUrl = `${IMAGE_BASE}/${tokenId}.jpg`;
+
+    return message.reply({
+      content: `Token ID: ${tokenId}`,
+      files: [{
+        attachment: imgUrl,
+        name: `sleepy-${tokenId}.jpg`
+      }]
+    });
   }
 });
 
