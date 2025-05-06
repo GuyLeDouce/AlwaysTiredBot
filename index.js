@@ -1,4 +1,4 @@
-// Sleepy Bot Full Setup
+// Sleepy Bot Full Setup with !sleepy, !mysleepys, !randomsleepy, !awareness
 
 const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
 const fetch = require('node-fetch');
@@ -10,7 +10,34 @@ const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
 const SLEEPY_CONTRACT = '0x3CCBd9C381742c04D81332b5db461951672F6A99';
 const IMAGE_BASE = 'https://ipfs.io/ipfs/bafybeigqhrsckizhwjow3dush4muyawn7jud2kbmy3akzxyby457njyr5e';
 
-const mecfsFacts = [ /* ... same 25 facts ... */ ];
+const mecfsFacts = [
+  "ME/CFS affects all races, genders, income levels, and ages. Recovery is rare — less than 5%.",
+  "ME/CFS is more common than multiple sclerosis, lupus, and many types of cancer.",
+  "ME/CFS has no FDA-approved treatments and no cure.",
+  "Physical or mental exertion can lead to a 'crash' known as post-exertional malaise (PEM).",
+  "Many people with ME/CFS are bedbound or housebound for months or years.",
+  "ME/CFS can follow viral infections, including Epstein-Barr, SARS, and COVID-19.",
+  "25% of ME/CFS patients are severely ill and may need feeding tubes, full-time care, or dark rooms.",
+  "ME/CFS is a neurological disease that affects energy production and immune function.",
+  "People with ME/CFS often sleep for long periods but still feel unrefreshed.",
+  "People with ME/CFS can have memory issues and difficulty concentrating — sometimes called 'brain fog'.",
+  "The CDC estimates over 2.5 million Americans have ME/CFS — most are undiagnosed.",
+  "Many doctors are unaware of how to recognize or manage ME/CFS.",
+  "ME/CFS can make even basic tasks like showering, cooking, or walking exhausting.",
+  "There is no single test for ME/CFS — diagnosis is based on symptoms and exclusion.",
+  "ME/CFS can worsen over time. Some patients deteriorate gradually while others decline rapidly.",
+  "ME/CFS is one of the most underfunded diseases relative to its burden.",
+  "Research funding per patient is lower than for almost any other major illness.",
+  "ME/CFS often co-occurs with fibromyalgia, POTS, IBS, and mast cell disorders.",
+  "People with ME/CFS can be sensitive to light, sound, touch, chemicals, and even food.",
+  "Some ME/CFS patients spend decades seeking a diagnosis.",
+  "Suicide risk is elevated due to isolation, suffering, and medical disbelief.",
+  "ME/CFS is not 'just tiredness' — it is a complex multi-system disease.",
+  "Children and teens can get ME/CFS too, often missing school or being misdiagnosed.",
+  "ME/CFS research is growing but still severely under-resourced.",
+  "Awareness and understanding are key to improving lives for those with ME/CFS.",
+  "Many ME/CFS patients find community and hope through online support networks."
+];
 
 const client = new Client({
   intents: [
