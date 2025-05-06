@@ -77,25 +77,6 @@ client.on('messageCreate', async (message) => {
     }
 
     return message.channel.send(`✅ Wallet linked.`);
-  }$/.test(address)) {
-      return message.reply('❌ Please enter a valid Ethereum wallet address.');
-    }
-    walletLinks[message.author.id] = address;
-    fs.writeFileSync('walletLinks.json', JSON.stringify(walletLinks, null, 2));
-
-    try {
-      await message.delete();
-    } catch (err) {
-      console.warn('Could not delete message:', err);
-    }
-
-    return message.channel.send(`✅ Wallet linked.`);
-  }$/.test(address)) {
-      return message.reply('❌ Please enter a valid Ethereum wallet address.');
-    }
-    walletLinks[message.author.id] = address;
-    fs.writeFileSync('walletLinks.json', JSON.stringify(walletLinks, null, 2));
-    return message.reply(`✅ Wallet linked: ${address}`);
   }
 
   const handleSleepyToken = async (tokenId, includeFact = false) => {
