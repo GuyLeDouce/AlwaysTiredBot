@@ -93,10 +93,7 @@ client.on('messageCreate', async (message) => {
       const res = await fetch(rarityApiUrl);
       const data = await res.json();
 
-      const fileCheck = await fetch(imgUrl);
-      if (!fileCheck.ok) throw new Error('Image not found');
-
-      const messageText = `Token ID: ${tokenId}\nRank: #${data.rank}` +
+            const messageText = `Token ID: ${tokenId}\nRank: #${data.rank}` +
         (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
 
       return message.reply({
@@ -194,4 +191,3 @@ client.on('messageCreate', async (message) => {
 });
 
 client.login(DISCORD_TOKEN);
-
