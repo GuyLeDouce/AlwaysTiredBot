@@ -1,3 +1,5 @@
+// Sleepy Bot with !sleepy, !mysleepys, !randomsleepy, and !awareness (no rarity score)
+
 const { Client, GatewayIntentBits } = require('discord.js');
 const fetch = require('node-fetch');
 const fs = require('fs');
@@ -6,7 +8,36 @@ const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
 
 const SLEEPY_CONTRACT = '0x3CCBd9C381742c04D81332b5db461951672F6A99';
-const IMAGE_BASE = 'https://ipfs.io/ipfs/bafybeigqhrsckizhwjow3dush4muyawn7jud2kbmy3akzxyby457njyr5e';
+const IMAGE_BASE = 'https://cloudflare-ipfs.com/ipfs/bafybeigqhrsckizhwjow3dush4muyawn7jud2kbmy3akzxyby457njyr5e';
+
+const mecfsFacts = [
+  "ME/CFS affects all races, genders, income levels, and ages. Recovery is rare — less than 5%.",
+  "ME/CFS is more common than multiple sclerosis, lupus, and many types of cancer.",
+  "ME/CFS has no FDA-approved treatments and no cure.",
+  "Physical or mental exertion can lead to a 'crash' known as post-exertional malaise (PEM).",
+  "Many people with ME/CFS are bedbound or housebound for months or years.",
+  "ME/CFS can follow viral infections, including Epstein-Barr, SARS, and COVID-19.",
+  "25% of ME/CFS patients are severely ill and may need feeding tubes, full-time care, or dark rooms.",
+  "ME/CFS is a neurological disease that affects energy production and immune function.",
+  "People with ME/CFS often sleep for long periods but still feel unrefreshed.",
+  "People with ME/CFS can have memory issues and difficulty concentrating — sometimes called 'brain fog'.",
+  "The CDC estimates over 2.5 million Americans have ME/CFS — most are undiagnosed.",
+  "Many doctors are unaware of how to recognize or manage ME/CFS.",
+  "ME/CFS can make even basic tasks like showering, cooking, or walking exhausting.",
+  "There is no single test for ME/CFS — diagnosis is based on symptoms and exclusion.",
+  "ME/CFS can worsen over time. Some patients deteriorate gradually while others decline rapidly.",
+  "ME/CFS is one of the most underfunded diseases relative to its burden.",
+  "Research funding per patient is lower than for almost any other major illness.",
+  "ME/CFS often co-occurs with fibromyalgia, POTS, IBS, and mast cell disorders.",
+  "People with ME/CFS can be sensitive to light, sound, touch, chemicals, and even food.",
+  "Some ME/CFS patients spend decades seeking a diagnosis.",
+  "Suicide risk is elevated due to isolation, suffering, and medical disbelief.",
+  "ME/CFS is not 'just tiredness' — it is a complex multi-system disease.",
+  "Children and teens can get ME/CFS too, often missing school or being misdiagnosed.",
+  "ME/CFS research is growing but still severely under-resourced.",
+  "Awareness and understanding are key to improving lives for those with ME/CFS.",
+  "Many ME/CFS patients find community and hope through online support networks."
+];
 
 const client = new Client({
   intents: [
@@ -31,7 +62,6 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // !linkwallet
   if (command === 'linkwallet') {
     const address = args[0];
     if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
@@ -42,15 +72,37 @@ client.on('messageCreate', async (message) => {
     return message.reply(`✅ Wallet linked: ${address}`);
   }
 
-  // !sleepy - random NFT from linked wallet
+  const handleSleepyToken = async (tokenId, includeFact = false) => {
+    const imgUrl = `${IMAGE_BASE}/${tokenId}.jpg`;
+    const rarityApiUrl = `https://api-mainnet.magiceden.dev/v2/eth/tokens/${SLEEPY_CONTRACT}/${tokenId}`;
+    const randomFact = mecfsFacts[Math.floor(Math.random() * mecfsFacts.length)];
+
+    try {
+      const res = await fetch(rarityApiUrl);
+      const data = await res.json();
+
+      const messageText = `Token ID: ${tokenId}\nRank: #${data.rank}` +
+        (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
+
+      return message.reply({
+        content: messageText,
+        files: [{ attachment: imgUrl, name: `sleepy-${tokenId}.jpg` }]
+      });
+    } catch (err) {
+      console.warn(`⚠️ Could not fetch rarity for Sleepy #${tokenId}. Showing image only.`);
+      const fallbackText = `Token ID: ${tokenId}` + (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
+      return message.reply({
+        content: fallbackText,
+        files: [{ attachment: imgUrl, name: `sleepy-${tokenId}.jpg` }]
+      });
+    }
+  };
+
   if (command === 'sleepy') {
     const wallet = walletLinks[message.author.id];
-    if (!wallet) {
-      return message.reply('❌ Please link your wallet first using `!linkwallet 0x...`');
-    }
+    if (!wallet) return message.reply('❌ Please link your wallet first using `!linkwallet 0x...`');
 
     const url = `https://api.etherscan.io/api?module=account&action=tokennfttx&address=${wallet}&contractaddress=${SLEEPY_CONTRACT}&page=1&offset=100&sort=asc&apikey=${ETHERSCAN_API_KEY}`;
-
     try {
       const res = await fetch(url);
       const data = await res.json();
@@ -68,31 +120,18 @@ client.on('messageCreate', async (message) => {
 
       const tokenArray = Array.from(owned);
       const randomToken = tokenArray[Math.floor(Math.random() * tokenArray.length)];
-      const imgUrl = `${IMAGE_BASE}/${randomToken}.jpg`;
-
-      return message.reply({
-        content: `Token ID: ${randomToken}`,
-        files: [{
-          attachment: imgUrl,
-          name: `sleepy-${randomToken}.jpg`
-        }]
-      });
-
+      return handleSleepyToken(randomToken);
     } catch (err) {
       console.error(err);
       return message.reply('⚠️ Error fetching your Sleepys. Please try again later.');
     }
   }
 
-  // !mysleepys - list up to 10 owned
   if (command === 'mysleepys') {
     const wallet = walletLinks[message.author.id];
-    if (!wallet) {
-      return message.reply('❌ Please link your wallet first using `!linkwallet 0x...`');
-    }
+    if (!wallet) return message.reply('❌ Please link your wallet first using `!linkwallet 0x...`');
 
     const url = `https://api.etherscan.io/api?module=account&action=tokennfttx&address=${wallet}&contractaddress=${SLEEPY_CONTRACT}&page=1&offset=100&sort=asc&apikey=${ETHERSCAN_API_KEY}`;
-
     try {
       const res = await fetch(url);
       const data = await res.json();
@@ -107,9 +146,7 @@ client.on('messageCreate', async (message) => {
       }
 
       const tokenArray = Array.from(owned);
-      if (tokenArray.length === 0) {
-        return message.reply('😢 You don’t currently own any Always Tired NFTs.');
-      }
+      if (tokenArray.length === 0) return message.reply('😢 You don’t currently own any Always Tired NFTs.');
 
       const limitedTokens = tokenArray.slice(0, 10);
       const files = limitedTokens.map((tokenId) => ({
@@ -118,52 +155,32 @@ client.on('messageCreate', async (message) => {
       }));
 
       const listedIds = limitedTokens.map(id => `Token ID: ${id}`).join('\n');
-
       return message.reply({ content: listedIds, files });
-
     } catch (err) {
       console.error(err);
       return message.reply('⚠️ Error fetching your Sleepys. Please try again later.');
     }
   }
 
-  // !sleepy[TOKEN_ID] - show any Sleepy with rarity (fallback to image only if needed)
+  if (command === 'randomsleepy') {
+    const tokenId = Math.floor(Math.random() * 4000) + 1;
+    return handleSleepyToken(tokenId);
+  }
+
+  if (command === 'awareness') {
+    const tokenId = Math.floor(Math.random() * 4000) + 1;
+    return handleSleepyToken(tokenId, true);
+  }
+
   if (command.startsWith('sleepy') && command !== 'sleepy' && command !== 'mysleepys') {
     const tokenId = command.replace('sleepy', '');
-
     if (!/^\d+$/.test(tokenId)) {
       return message.reply('❌ Please enter a valid token number after `!sleepy` (e.g. `!sleepy142`)');
     }
-
-    const imgUrl = `${IMAGE_BASE}/${tokenId}.jpg`;
-    const rarityApiUrl = `https://api-mainnet.magiceden.dev/v2/eth/tokens/${SLEEPY_CONTRACT}/${tokenId}`;
-
-    try {
-      const res = await fetch(rarityApiUrl);
-      const data = await res.json();
-
-      if (data.rank && data.rarityScore) {
-        return message.reply({
-          content: `Token ID: ${tokenId}\nRank: #${data.rank}\nRarity Score: ${data.rarityScore}`,
-          files: [{
-            attachment: imgUrl,
-            name: `sleepy-${tokenId}.jpg`
-          }]
-        });
-      } else {
-        throw new Error('Rarity not found');
-      }
-    } catch (err) {
-      console.warn(`⚠️ Could not fetch rarity for Sleepy #${tokenId}. Showing image only.`);
-      return message.reply({
-        content: `Token ID: ${tokenId}`,
-        files: [{
-          attachment: imgUrl,
-          name: `sleepy-${tokenId}.jpg`
-        }]
-      });
-    }
+    return handleSleepyToken(tokenId);
   }
 });
+
+client.login(DISCORD_TOKEN);
 
 client.login(DISCORD_TOKEN);
