@@ -85,27 +85,22 @@ client.on('messageCreate', async (message) => {
   }
 
   const handleSleepyToken = async (tokenId, includeFact = false) => {
-    const imgUrl = `${IMAGE_BASE}/${tokenId}.jpg`;
-    const rarityApiUrl = `https://api-mainnet.magiceden.dev/v2/eth/tokens/${SLEEPY_CONTRACT}/${tokenId}`;
-    const randomFact = mecfsFacts[Math.floor(Math.random() * mecfsFacts.length)];
+  const imgUrl = `${IMAGE_BASE}/${tokenId}.jpg`;
+  const randomFact = mecfsFacts[Math.floor(Math.random() * mecfsFacts.length)];
 
-    try {
-      const res = await fetch(rarityApiUrl);
-      const data = await res.json();
+  try {
+    const messageText = `Token ID: ${tokenId}` + (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
+    return message.reply({
+      content: messageText,
+      files: [{ attachment: imgUrl, name: `sleepy-${tokenId}.jpg` }]
+    });
+  } catch (err) {
+    console.warn(`⚠️ Could not send image for Sleepy #${tokenId}.`);
+    const fallbackText = `Token ID: ${tokenId}` + (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
+    return message.reply({ content: fallbackText });
+  }
+};
 
-            const messageText = `Token ID: ${tokenId}\nRank: #${data.rank}` +
-        (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
-
-      return message.reply({
-        content: messageText,
-        files: [{ attachment: imgUrl, name: `sleepy-${tokenId}.jpg` }]
-      });
-    } catch (err) {
-      console.warn(`⚠️ Could not fetch data or image for Sleepy #${tokenId}. Showing fallback.`);
-      const fallbackText = `Token ID: ${tokenId}` + (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
-      return message.reply({ content: fallbackText });
-    }
-  };
 
   if (command === 'sleepy') {
     const wallet = walletLinks[message.author.id];
