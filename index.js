@@ -186,22 +186,37 @@ function buildSleepyMessage(tokenId, includeFact = false) {
 }
 
 // bump offset so we can handle wallets with lots of Sleepys
+// bump offset so we can handle wallets with lots of Sleepys
 async function fetchOwnedTokens(wallet) {
   const url = `https://api.etherscan.io/api?module=account&action=tokennfttx&address=${wallet}&contractaddress=${SLEEPY_CONTRACT}&page=1&offset=1000&sort=asc&apikey=${ETHERSCAN_API_KEY}`;
   const res = await fetch(url);
   const data = await res.json();
 
   const owned = new Set();
+  const walletLower = wallet.toLowerCase();
+
+  if (!data || !Array.isArray(data.result)) {
+    console.warn('Unexpected Etherscan response for fetchOwnedTokens:', data);
+    return [];
+  }
+
   for (const tx of data.result) {
-    if (tx.to.toLowerCase() === wallet.toLowerCase()) {
+    // Some tx entries may be malformed / missing fields – skip safely
+    if (!tx || !tx.tokenID) continue;
+
+    const to = tx.to ? tx.to.toLowerCase() : null;
+    const from = tx.from ? tx.from.toLowerCase() : null;
+
+    if (to === walletLower) {
       owned.add(tx.tokenID);
-    } else if (tx.from.toLowerCase() === wallet.toLowerCase()) {
+    } else if (from === walletLower) {
       owned.delete(tx.tokenID);
     }
   }
 
   return Array.from(owned);
 }
+
 
 // Create a grid PNG from an array of tokenIds (as strings)
 async function createSleepyGrid(tokenIds) {
