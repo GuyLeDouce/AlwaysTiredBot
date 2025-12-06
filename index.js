@@ -9,7 +9,8 @@ const {
   REST,
   Routes,
   SlashCommandBuilder,
-  Events
+  Events,
+  MessageFlags
 } = require('discord.js');
 const fetch = require('node-fetch');
 const fs = require('fs');
@@ -274,7 +275,7 @@ client.on('interactionCreate', async (interaction) => {
     if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
       return interaction.reply({
         content: '❌ Please enter a valid Ethereum wallet address.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -282,13 +283,13 @@ client.on('interactionCreate', async (interaction) => {
       await setWalletLink(interaction.user.id, address);
       return interaction.reply({
         content: '✅ Wallet linked.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     } catch (err) {
       console.error('Error saving wallet link:', err);
       return interaction.reply({
         content: '⚠️ Error saving your wallet link. Please try again later.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   }
@@ -299,7 +300,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!wallet) {
         return interaction.reply({
           content: '❌ Please link your wallet first using `/linkwallet 0x...`',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -307,7 +308,7 @@ client.on('interactionCreate', async (interaction) => {
       if (owned.length === 0) {
         return interaction.reply({
           content: '😢 You don’t own any Always Tired NFTs.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -328,7 +329,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.replied && !interaction.deferred) {
         return interaction.reply({
           content: '⚠️ Error fetching your Sleepys. Please try again later.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     }
@@ -340,7 +341,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!wallet) {
         return interaction.reply({
           content: '❌ Please link your wallet first using `/linkwallet 0x...`',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -348,7 +349,7 @@ client.on('interactionCreate', async (interaction) => {
       if (owned.length === 0) {
         return interaction.reply({
           content: '😢 You don’t currently own any Always Tired NFTs.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -371,7 +372,7 @@ client.on('interactionCreate', async (interaction) => {
       if (!interaction.replied && !interaction.deferred) {
         return interaction.reply({
           content: '⚠️ Error fetching your Sleepys. Please try again later.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
     }
@@ -412,7 +413,7 @@ client.on('interactionCreate', async (interaction) => {
     if (tokenId <= 0) {
       return interaction.reply({
         content: '❌ Please enter a valid token number greater than 0.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
