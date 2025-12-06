@@ -8,7 +8,7 @@ const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
 
 const SLEEPY_CONTRACT = '0x3CCBd9C381742c04D81332b5db461951672F6A99';
-const IMAGE_BASE = 'https://ipfs.io/ipfs/bafybeigqhrsckizhwjow3dush4muyawn7jud2kbmy3akzxyby457njyr5e';
+const IMAGE_BASE = 'https://ipfs.chlewigen.ch/ipfs/QmcMWvNKhSzFqbvyCdcaiuBgQLTSEmHXWjys2N1dBUAHFe/';
 
 const mecfsFacts = [
   "ME/CFS affects all races, genders, income levels, and ages. Recovery is rare — under 5%.",
