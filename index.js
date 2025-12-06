@@ -1,14 +1,81 @@
-// Sleepy Bot Full Setup with !sleepy, !mysleepys, !randomsleepy, !awareness
+// Sleepy Bot Setup with slash + legacy message commands:
+// Slash: /sleepy, /mysleepys, /randomsleepy, /awareness, /linkwallet, /sleepyid
+// Legacy: !sleepy, !mysleepys, !randomsleepy, !awareness, !linkwallet, !sleepy<id>
 
-const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
+const {
+  Client,
+  GatewayIntentBits,
+  PermissionsBitField,
+  REST,
+  Routes,
+  SlashCommandBuilder
+} = require('discord.js');
 const fetch = require('node-fetch');
 const fs = require('fs');
+const { Pool } = require('pg');
 
 const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
+const DATABASE_URL = process.env.DATABASE_URL;
+
+// ---- Postgres Setup ----
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  // For local dev without SSL, set PGSSL_DISABLE=true
+  ssl: process.env.PGSSL_DISABLE === 'true' ? false : { rejectUnauthorized: false }
+});
+
+async function ensureWalletTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS wallet_links (
+      user_id TEXT PRIMARY KEY,
+      address TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+}
+
+async function setWalletLink(userId, address) {
+  await pool.query(
+    `
+      INSERT INTO wallet_links (user_id, address, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (user_id)
+      DO UPDATE SET address = EXCLUDED.address, updated_at = NOW();
+    `,
+    [userId, address]
+  );
+}
+
+async function getWalletLink(userId) {
+  // First try Postgres
+  const res = await pool.query(
+    `SELECT address FROM wallet_links WHERE user_id = $1`,
+    [userId]
+  );
+  if (res.rows.length > 0) {
+    return res.rows[0].address;
+  }
+
+  // Fallback to legacy JSON (if it exists) so old links still work
+  if (walletLinks[userId]) {
+    const address = walletLinks[userId];
+    // Backfill into Postgres
+    try {
+      await setWalletLink(userId, address);
+    } catch (err) {
+      console.warn('Failed to backfill wallet link into Postgres:', err);
+    }
+    return address;
+  }
+
+  return null;
+}
+
+// ---- Constants ----
 
 const SLEEPY_CONTRACT = '0x3CCBd9C381742c04D81332b5db461951672F6A99';
-const IMAGE_BASE = 'https://ipfs.chlewigen.ch/ipfs/QmcMWvNKhSzFqbvyCdcaiuBgQLTSEmHXWjys2N1dBUAHFe/';
+const IMAGE_BASE = 'https://ipfs.chlewigen.ch/ipfs/QmcMWvNKhSzFqbvyCdcaiuBgQLTSEmHXWjys2N1dBUAHFe';
 
 const mecfsFacts = [
   "ME/CFS affects all races, genders, income levels, and ages. Recovery is rare — under 5%.",
@@ -90,6 +157,8 @@ const mecfsFacts = [
   "You can help by listening, believing, and supporting those affected."
 ];
 
+// ---- Client Setup ----
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -98,14 +167,274 @@ const client = new Client({
   ]
 });
 
+// Legacy JSON walletLinks as fallback
 let walletLinks = {};
 if (fs.existsSync('walletLinks.json')) {
   walletLinks = JSON.parse(fs.readFileSync('walletLinks.json'));
 }
 
-client.on('ready', () => {
+// ---- Helpers ----
+
+function buildSleepyMessage(tokenId, includeFact = false) {
+  const imgUrl = `${IMAGE_BASE}/${tokenId}.jpg`;
+  const randomFact = mecfsFacts[Math.floor(Math.random() * mecfsFacts.length)];
+  const text = `Token ID: ${tokenId}` + (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
+  return { text, imgUrl };
+}
+
+async function fetchOwnedTokens(wallet) {
+  const url = `https://api.etherscan.io/api?module=account&action=tokennfttx&address=${wallet}&contractaddress=${SLEEPY_CONTRACT}&page=1&offset=100&sort=asc&apikey=${ETHERSCAN_API_KEY}`;
+  const res = await fetch(url);
+  const data = await res.json();
+
+  const owned = new Set();
+  for (const tx of data.result) {
+    if (tx.to.toLowerCase() === wallet.toLowerCase()) {
+      owned.add(tx.tokenID);
+    } else if (tx.from.toLowerCase() === wallet.toLowerCase()) {
+      owned.delete(tx.tokenID);
+    }
+  }
+
+  return Array.from(owned);
+}
+
+// ---- Slash Command Definitions ----
+
+const GUILD_ID = '943847323690217482';
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName('linkwallet')
+    .setDescription('Link your Ethereum wallet for Always Tired.')
+    .addStringOption(option =>
+      option
+        .setName('address')
+        .setDescription('Your Ethereum wallet address (0x...)')
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('sleepy')
+    .setDescription('Show a random Always Tired NFT you own.'),
+
+  new SlashCommandBuilder()
+    .setName('mysleepys')
+    .setDescription('Show up to 10 Always Tired NFTs you own.'),
+
+  new SlashCommandBuilder()
+    .setName('randomsleepy')
+    .setDescription('Show a completely random Always Tired NFT.'),
+
+  new SlashCommandBuilder()
+    .setName('awareness')
+    .setDescription('Share a random Always Tired NFT with an ME/CFS fact.'),
+
+  new SlashCommandBuilder()
+    .setName('sleepyid')
+    .setDescription('Show a specific Always Tired NFT by token ID.')
+    .addIntegerOption(option =>
+      option
+        .setName('tokenid')
+        .setDescription('Token ID (e.g. 142)')
+        .setRequired(true)
+    )
+].map(cmd => cmd.toJSON());
+
+// ---- Ready & Command Registration ----
+
+client.once('ready', async () => {
   console.log(`😴 Sleepy Bot logged in as ${client.user.tag}`);
+
+  try {
+    await ensureWalletTable();
+    console.log('✅ wallet_links table ready.');
+  } catch (err) {
+    console.error('❌ Error ensuring wallet_links table:', err);
+  }
+
+  try {
+    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+    await rest.put(
+      Routes.applicationGuildCommands(client.user.id, GUILD_ID),
+      { body: commands }
+    );
+    console.log('✅ Slash commands registered for guild:', GUILD_ID);
+  } catch (err) {
+    console.error('❌ Error registering slash commands:', err);
+  }
 });
+
+// ---- Slash Command Handling ----
+
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+
+  const { commandName } = interaction;
+
+  if (commandName === 'linkwallet') {
+    const address = interaction.options.getString('address', true).trim();
+
+    if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
+      return interaction.reply({
+        content: '❌ Please enter a valid Ethereum wallet address.',
+        ephemeral: true
+      });
+    }
+
+    try {
+      await setWalletLink(interaction.user.id, address);
+      return interaction.reply({
+        content: '✅ Wallet linked.',
+        ephemeral: true
+      });
+    } catch (err) {
+      console.error('Error saving wallet link:', err);
+      return interaction.reply({
+        content: '⚠️ Error saving your wallet link. Please try again later.',
+        ephemeral: true
+      });
+    }
+  }
+
+  if (commandName === 'sleepy') {
+    try {
+      const wallet = await getWalletLink(interaction.user.id);
+      if (!wallet) {
+        return interaction.reply({
+          content: '❌ Please link your wallet first using `/linkwallet 0x...`',
+          ephemeral: true
+        });
+      }
+
+      const owned = await fetchOwnedTokens(wallet);
+      if (owned.length === 0) {
+        return interaction.reply({
+          content: '😢 You don’t own any Always Tired NFTs.',
+          ephemeral: true
+        });
+      }
+
+      const randomToken = owned[Math.floor(Math.random() * owned.length)];
+      const { text, imgUrl } = buildSleepyMessage(randomToken);
+
+      try {
+        await interaction.reply({
+          content: text,
+          files: [{ attachment: imgUrl, name: `sleepy-${randomToken}.jpg` }]
+        });
+      } catch (err) {
+        console.warn(`⚠️ Could not send image for Sleepy #${randomToken}.`, err);
+        await interaction.reply({ content: text });
+      }
+    } catch (err) {
+      console.error(err);
+      if (!interaction.replied && !interaction.deferred) {
+        return interaction.reply({
+          content: '⚠️ Error fetching your Sleepys. Please try again later.',
+          ephemeral: true
+        });
+      }
+    }
+  }
+
+  if (commandName === 'mysleepys') {
+    try {
+      const wallet = await getWalletLink(interaction.user.id);
+      if (!wallet) {
+        return interaction.reply({
+          content: '❌ Please link your wallet first using `/linkwallet 0x...`',
+          ephemeral: true
+        });
+      }
+
+      const owned = await fetchOwnedTokens(wallet);
+      if (owned.length === 0) {
+        return interaction.reply({
+          content: '😢 You don’t currently own any Always Tired NFTs.',
+          ephemeral: true
+        });
+      }
+
+      const limitedTokens = owned.slice(0, 10);
+      const files = limitedTokens.map((tokenId) => ({
+        attachment: `${IMAGE_BASE}/${tokenId}.jpg`,
+        name: `sleepy-${tokenId}.jpg`
+      }));
+
+      const listedIds = limitedTokens.map(id => `Token ID: ${id}`).join('\n');
+
+      try {
+        await interaction.reply({ content: listedIds, files });
+      } catch (err) {
+        console.warn('⚠️ Could not send one or more images for mysleepys.', err);
+        await interaction.reply({ content: listedIds });
+      }
+    } catch (err) {
+      console.error(err);
+      if (!interaction.replied && !interaction.deferred) {
+        return interaction.reply({
+          content: '⚠️ Error fetching your Sleepys. Please try again later.',
+          ephemeral: true
+        });
+      }
+    }
+  }
+
+  if (commandName === 'randomsleepy') {
+    const tokenId = Math.floor(Math.random() * 4000) + 1;
+    const { text, imgUrl } = buildSleepyMessage(tokenId);
+
+    try {
+      await interaction.reply({
+        content: text,
+        files: [{ attachment: imgUrl, name: `sleepy-${tokenId}.jpg` }]
+      });
+    } catch (err) {
+      console.warn(`⚠️ Could not send image for random Sleepy #${tokenId}.`, err);
+      await interaction.reply({ content: text });
+    }
+  }
+
+  if (commandName === 'awareness') {
+    const tokenId = Math.floor(Math.random() * 4000) + 1;
+    const { text, imgUrl } = buildSleepyMessage(tokenId, true);
+
+    try {
+      await interaction.reply({
+        content: text,
+        files: [{ attachment: imgUrl, name: `sleepy-${tokenId}.jpg` }]
+      });
+    } catch (err) {
+      console.warn(`⚠️ Could not send image for awareness Sleepy #${tokenId}.`, err);
+      await interaction.reply({ content: text });
+    }
+  }
+
+  if (commandName === 'sleepyid') {
+    const tokenId = interaction.options.getInteger('tokenid', true);
+    if (tokenId <= 0) {
+      return interaction.reply({
+        content: '❌ Please enter a valid token number greater than 0.',
+        ephemeral: true
+      });
+    }
+
+    const { text, imgUrl } = buildSleepyMessage(tokenId);
+
+    try {
+      await interaction.reply({
+        content: text,
+        files: [{ attachment: imgUrl, name: `sleepy-${tokenId}.jpg` }]
+      });
+    } catch (err) {
+      console.warn(`⚠️ Could not send image for Sleepy #${tokenId}.`, err);
+      await interaction.reply({ content: text });
+    }
+  }
+});
+
+// ---- Legacy Message Command Handling (Option C) ----
 
 client.on('messageCreate', async (message) => {
   if (!message.content.startsWith('!') || message.author.bot) return;
@@ -113,14 +442,21 @@ client.on('messageCreate', async (message) => {
   const args = message.content.slice(1).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
+  // !linkwallet
   if (command === 'linkwallet') {
     const address = args[0];
     if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
       return message.reply('❌ Please enter a valid Ethereum wallet address.');
     }
-    walletLinks[message.author.id] = address;
-    fs.writeFileSync('walletLinks.json', JSON.stringify(walletLinks, null, 2));
 
+    try {
+      await setWalletLink(message.author.id, address);
+    } catch (err) {
+      console.error('Error saving wallet link (legacy !linkwallet):', err);
+      return message.reply('⚠️ Error saving your wallet link. Please try again later.');
+    }
+
+    // Try to delete the message if we have perms
     if (
       message.guild &&
       message.guild.members.me.permissionsIn(message.channel).has(PermissionsBitField.Flags.ManageMessages)
@@ -132,49 +468,33 @@ client.on('messageCreate', async (message) => {
       }
     }
 
-    return message.channel.send(`✅ Wallet linked.`);
+    return message.channel.send('✅ Wallet linked.');
   }
 
   const handleSleepyToken = async (tokenId, includeFact = false) => {
-  const imgUrl = `${IMAGE_BASE}/${tokenId}.jpg`;
-  const randomFact = mecfsFacts[Math.floor(Math.random() * mecfsFacts.length)];
+    const { text, imgUrl } = buildSleepyMessage(tokenId, includeFact);
 
-  try {
-    const messageText = `Token ID: ${tokenId}` + (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
-    return message.reply({
-      content: messageText,
-      files: [{ attachment: imgUrl, name: `sleepy-${tokenId}.jpg` }]
-    });
-  } catch (err) {
-    console.warn(`⚠️ Could not send image for Sleepy #${tokenId}.`);
-    const fallbackText = `Token ID: ${tokenId}` + (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
-    return message.reply({ content: fallbackText });
-  }
-};
-
-
-  if (command === 'sleepy') {
-    const wallet = walletLinks[message.author.id];
-    if (!wallet) return message.reply('❌ Please link your wallet first using `!linkwallet 0x...`');
-
-    const url = `https://api.etherscan.io/api?module=account&action=tokennfttx&address=${wallet}&contractaddress=${SLEEPY_CONTRACT}&page=1&offset=100&sort=asc&apikey=${ETHERSCAN_API_KEY}`;
     try {
-      const res = await fetch(url);
-      const data = await res.json();
+      return message.reply({
+        content: text,
+        files: [{ attachment: imgUrl, name: `sleepy-${tokenId}.jpg` }]
+      });
+    } catch (err) {
+      console.warn(`⚠️ Could not send image for Sleepy #${tokenId}.`, err);
+      return message.reply({ content: text });
+    }
+  };
 
-      const owned = new Set();
-      for (const tx of data.result) {
-        if (tx.to.toLowerCase() === wallet.toLowerCase()) {
-          owned.add(tx.tokenID);
-        } else if (tx.from.toLowerCase() === wallet.toLowerCase()) {
-          owned.delete(tx.tokenID);
-        }
-      }
+  // !sleepy
+  if (command === 'sleepy') {
+    try {
+      const wallet = await getWalletLink(message.author.id);
+      if (!wallet) return message.reply('❌ Please link your wallet first using `!linkwallet 0x...` or `/linkwallet 0x...`');
 
-      if (owned.size === 0) return message.reply('😢 You don’t own any Always Tired NFTs.');
+      const owned = await fetchOwnedTokens(wallet);
+      if (owned.length === 0) return message.reply('😢 You don’t own any Always Tired NFTs.');
 
-      const tokenArray = Array.from(owned);
-      const randomToken = tokenArray[Math.floor(Math.random() * tokenArray.length)];
+      const randomToken = owned[Math.floor(Math.random() * owned.length)];
       return handleSleepyToken(randomToken);
     } catch (err) {
       console.error(err);
@@ -182,51 +502,47 @@ client.on('messageCreate', async (message) => {
     }
   }
 
+  // !mysleepys
   if (command === 'mysleepys') {
-    const wallet = walletLinks[message.author.id];
-    if (!wallet) return message.reply('❌ Please link your wallet first using `!linkwallet 0x...`');
-
-    const url = `https://api.etherscan.io/api?module=account&action=tokennfttx&address=${wallet}&contractaddress=${SLEEPY_CONTRACT}&page=1&offset=100&sort=asc&apikey=${ETHERSCAN_API_KEY}`;
     try {
-      const res = await fetch(url);
-      const data = await res.json();
+      const wallet = await getWalletLink(message.author.id);
+      if (!wallet) return message.reply('❌ Please link your wallet first using `!linkwallet 0x...` or `/linkwallet 0x...`');
 
-      const owned = new Set();
-      for (const tx of data.result) {
-        if (tx.to.toLowerCase() === wallet.toLowerCase()) {
-          owned.add(tx.tokenID);
-        } else if (tx.from.toLowerCase() === wallet.toLowerCase()) {
-          owned.delete(tx.tokenID);
-        }
-      }
+      const owned = await fetchOwnedTokens(wallet);
+      if (owned.length === 0) return message.reply('😢 You don’t currently own any Always Tired NFTs.');
 
-      const tokenArray = Array.from(owned);
-      if (tokenArray.length === 0) return message.reply('😢 You don’t currently own any Always Tired NFTs.');
-
-      const limitedTokens = tokenArray.slice(0, 10);
+      const limitedTokens = owned.slice(0, 10);
       const files = limitedTokens.map((tokenId) => ({
         attachment: `${IMAGE_BASE}/${tokenId}.jpg`,
         name: `sleepy-${tokenId}.jpg`
       }));
 
       const listedIds = limitedTokens.map(id => `Token ID: ${id}`).join('\n');
-      return message.reply({ content: listedIds, files });
+      try {
+        return message.reply({ content: listedIds, files });
+      } catch (err) {
+        console.warn('⚠️ Could not send one or more images for mysleepys.', err);
+        return message.reply({ content: listedIds });
+      }
     } catch (err) {
       console.error(err);
       return message.reply('⚠️ Error fetching your Sleepys. Please try again later.');
     }
   }
 
+  // !randomsleepy
   if (command === 'randomsleepy') {
     const tokenId = Math.floor(Math.random() * 4000) + 1;
     return handleSleepyToken(tokenId);
   }
 
+  // !awareness (kept as requested)
   if (command === 'awareness') {
     const tokenId = Math.floor(Math.random() * 4000) + 1;
     return handleSleepyToken(tokenId, true);
   }
 
+  // !sleepy<number> (e.g., !sleepy142)
   if (command.startsWith('sleepy') && command !== 'sleepy' && command !== 'mysleepys') {
     const tokenId = command.replace('sleepy', '');
     if (!/^\d+$/.test(tokenId)) {
@@ -235,5 +551,7 @@ client.on('messageCreate', async (message) => {
     return handleSleepyToken(tokenId);
   }
 });
+
+// ---- Login ----
 
 client.login(DISCORD_TOKEN);
