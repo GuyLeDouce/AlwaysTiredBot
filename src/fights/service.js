@@ -126,9 +126,10 @@ function formatCrossedOutNames(players) {
 }
 
 class FightService {
-  constructor(client, leaderboardService = null) {
+  constructor(client, leaderboardService = null, dripService = null) {
     this.client = client;
     this.leaderboardService = leaderboardService;
+    this.dripService = dripService;
     this.activeFights = new Map();
   }
 
@@ -185,7 +186,8 @@ class FightService {
       botCounter: 0,
       totalVespaKills: 0,
       pendingUnlocks: [],
-      persistentVespaProgress: new Map()
+      persistentVespaProgress: new Map(),
+      humanEntrantCount: 0
     };
 
     const embed = this.buildLobbyEmbed(state);
@@ -333,12 +335,15 @@ class FightService {
     await this.refreshLobbyParticipants(state);
     await this.updateLobbyMessage(state);
 
+    const humanParticipants = Array.from(state.participants.values()).filter(player => !player.isBot);
+    state.humanEntrantCount = humanParticipants.length;
+
     if (state.participants.size === 0) {
       await this.cancelFight(state, 'Fight cancelled. No warriors joined the lobby.');
       return;
     }
 
-    if (state.participants.size < BOT_FILL_TRIGGER_COUNT) {
+    if (state.humanEntrantCount < BOT_FILL_TRIGGER_COUNT) {
       this.addBotParticipants(state, BOT_FILL_COUNT);
     }
 
@@ -357,11 +362,13 @@ class FightService {
     }
 
     for (const player of state.alivePlayers) {
+      const persistentProgress = state.persistentVespaProgress.get(player.id);
       state.playerStats.set(player.id, {
         id: player.id,
         mention: player.mention,
         name: player.name,
         isBot: Boolean(player.isBot),
+        hasVespaUnlocked: Boolean(persistentProgress?.hasVespaUnlocked),
         kills: 0,
         deaths: 0,
         revives: 0,
@@ -730,10 +737,13 @@ class FightService {
     currentProgress.totalVespaKills += 1;
     if (isFirstLifetimeUnlock) {
       currentProgress.hasVespaUnlocked = true;
+      killerStats.hasVespaUnlocked = true;
       state.pendingUnlocks.push({
         playerId: killerId,
         playerName: killerStats.mention
       });
+    } else if (currentProgress.hasVespaUnlocked) {
+      killerStats.hasVespaUnlocked = true;
     }
 
     state.persistentVespaProgress.set(killerId, currentProgress);
@@ -858,6 +868,8 @@ class FightService {
     const vespaKillers = [...state.playerStats.values()].filter(stats => stats.vespaKills > 0);
     const comebackPlayer = [...state.playerStats.values()]
       .sort((a, b) => b.revivedCount - a.revivedCount || b.kills - a.kills)[0];
+    const rankedFinishers = placements.filter(stats => !stats.isBot).slice(0, 3);
+    const vespaEligibleFinisher = placements.find(stats => !stats.isBot && stats.hasVespaUnlocked);
 
     const resultsEmbed = new EmbedBuilder()
       .setColor(0x5a3921)
@@ -900,6 +912,21 @@ class FightService {
       );
 
     await channel.send({ embeds: [resultsEmbed] });
+
+    if (this.dripService && state.humanEntrantCount > 0) {
+      try {
+        const payout = await this.dripService.payoutFightResults({
+          participantCount: state.humanEntrantCount,
+          rankedFinishers,
+          vespaEligibleFinisher
+        });
+        await channel.send({ embeds: [this.dripService.buildPayoutEmbed(payout)] });
+        await this.sendDripLogReceipt(payout);
+      } catch (err) {
+        console.error('Failed to process DRIP payouts:', err);
+        await this.sendDripLogError(state, err);
+      }
+    }
 
     if (this.leaderboardService) {
       try {
@@ -1183,6 +1210,56 @@ class FightService {
 
     const user = await this.client.users.fetch(userId).catch(() => null);
     return user ? user.displayAvatarURL({ extension: 'png', size: 256 }) : null;
+  }
+
+  async sendDripLogReceipt(payout) {
+    if (!this.dripService?.logChannelId) {
+      return;
+    }
+
+    const logChannel = await this.fetchChannel(this.dripService.logChannelId);
+    if (!logChannel || !logChannel.isTextBased()) {
+      return;
+    }
+
+    await logChannel.send({
+      embeds: [this.dripService.buildLogEmbed(payout)]
+    }).catch(() => null);
+  }
+
+  async sendDripLogError(state, error) {
+    if (!this.dripService?.logChannelId) {
+      return;
+    }
+
+    const logChannel = await this.fetchChannel(this.dripService.logChannelId);
+    if (!logChannel || !logChannel.isTextBased()) {
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor(0xb04a3a)
+      .setTitle('DRIP Payout Error')
+      .setDescription('A fight finished, but the DRIP payout flow failed before completion.')
+      .addFields(
+        {
+          name: 'Guild',
+          value: state.guildId,
+          inline: true
+        },
+        {
+          name: 'Channel',
+          value: state.channelId,
+          inline: true
+        },
+        {
+          name: 'Reason',
+          value: (error?.message || String(error)).slice(0, 1024),
+          inline: false
+        }
+      );
+
+    await logChannel.send({ embeds: [embed] }).catch(() => null);
   }
 }
 

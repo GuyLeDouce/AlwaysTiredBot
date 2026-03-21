@@ -19,11 +19,16 @@ const { Pool } = require('pg');
 const Jimp = require('jimp');
 const { FightService } = require('./src/fights/service');
 const { LeaderboardService } = require('./src/leaderboards/service');
+const { DripService } = require('./src/rewards/dripService');
 
 const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
 const DATABASE_URL_LEADERBOARD = process.env.DATABASE_URL_LEADERBOARD || DATABASE_URL;
+const DRIP_API_TOKEN = process.env.DRIP_API_TOKEN;
+const DRIP_REALM_ID = process.env.DRIP_REALM_ID;
+const DRIP_CLIENT_ID = process.env.DRIP_CLIENT_ID;
+const DRIP_LOG_CHANNEL_ID = process.env.DRIP_LOG_CHANNEL_ID;
 const ENABLE_MESSAGE_CONTENT_INTENT = process.env.ENABLE_MESSAGE_CONTENT_INTENT === 'true';
 const FIGHT_ALLOWED_USER_IDS = new Set(['826581856400179210', '923567278610595871']);
 const FIGHT_ALLOWED_ROLE_ID = '1404835877963825204';
@@ -273,7 +278,13 @@ const client = new Client({
 });
 
 const leaderboardService = new LeaderboardService(leaderboardPool);
-const fightService = new FightService(client, leaderboardService);
+const dripService = new DripService({
+  apiToken: DRIP_API_TOKEN,
+  realmId: DRIP_REALM_ID,
+  clientId: DRIP_CLIENT_ID,
+  logChannelId: DRIP_LOG_CHANNEL_ID
+});
+const fightService = new FightService(client, leaderboardService, dripService);
 
 // Legacy JSON walletLinks as fallback
 let walletLinks = {};
@@ -317,6 +328,24 @@ function canResetVespaSystem(interaction) {
     memberPermissions?.has(PermissionsBitField.Flags.Administrator)
     || memberPermissions?.has(PermissionsBitField.Flags.ManageRoles)
   );
+}
+
+function parseLeaderboardMonthInput(value) {
+  if (!value) {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  const match = /^(0[1-9]|1[0-2])\/(\d{4})$/.exec(trimmed);
+  if (!match) {
+    return { error: 'Please use `MM/YYYY`, for example `03/2026`.' };
+  }
+
+  const month = Number(match[1]);
+  const year = Number(match[2]);
+  const monthStart = new Date(Date.UTC(year, month - 1, 1));
+  const label = `${match[1]}/${match[2]}`;
+  return { monthStart, label };
 }
 
 // Fetch token IDs for a single wallet (Etherscan V2)
@@ -499,7 +528,13 @@ const commandsBuilders = [
 
   new SlashCommandBuilder()
     .setName('leaderboard')
-    .setDescription('Show the global ME/CFS Warriors leaderboard.'),
+    .setDescription('Show the global ME/CFS Warriors leaderboard.')
+    .addStringOption(option =>
+      option
+        .setName('month')
+        .setDescription('Optional month filter in MM/YYYY. Restricted to approved users/role.')
+        .setRequired(false)
+    ),
 
   new SlashCommandBuilder()
     .setName('vespaboard')
@@ -858,8 +893,36 @@ client.on('interactionCreate', async (interaction) => {
 
   if (commandName === 'leaderboard') {
     try {
-      const rows = await leaderboardService.getGlobalLeaderboard(interaction.guildId, 10);
-      await interaction.reply({ embeds: [leaderboardService.buildGlobalLeaderboardEmbed(rows)] });
+      const monthInput = interaction.options.getString('month');
+      if (monthInput && !canManageFights(interaction)) {
+        await interaction.reply({
+          content: '❌ You do not have permission to view monthly leaderboard history.',
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      const parsedMonth = parseLeaderboardMonthInput(monthInput);
+      if (parsedMonth?.error) {
+        await interaction.reply({
+          content: `❌ ${parsedMonth.error}`,
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      const rows = parsedMonth
+        ? await leaderboardService.getMonthlyGlobalLeaderboard(interaction.guildId, parsedMonth.monthStart, 10)
+        : await leaderboardService.getGlobalLeaderboard(interaction.guildId, 10);
+
+      await interaction.reply({
+        embeds: [
+          leaderboardService.buildGlobalLeaderboardEmbed(
+            rows,
+            parsedMonth ? `Month: ${parsedMonth.label}` : 'All Time'
+          )
+        ]
+      });
     } catch (err) {
       console.error('Error fetching global leaderboard:', err);
       if (!interaction.replied) {

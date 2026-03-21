@@ -1,6 +1,7 @@
 const { EmbedBuilder, PermissionsBitField } = require('discord.js');
 
 const PLAYER_STATS_TABLE = 'fight_player_stats';
+const PLAYER_STATS_MONTHLY_TABLE = 'fight_player_stats_monthly';
 const VESPA_ROLE_ID = '1428408018709512262';
 
 class LeaderboardService {
@@ -27,6 +28,25 @@ class LeaderboardService {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (guild_id, user_id)
+      );
+    `);
+
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS ${PLAYER_STATS_MONTHLY_TABLE} (
+        guild_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        month_start DATE NOT NULL,
+        display_name TEXT NOT NULL,
+        total_games_played INTEGER NOT NULL DEFAULT 0,
+        total_wins INTEGER NOT NULL DEFAULT 0,
+        total_top3 INTEGER NOT NULL DEFAULT 0,
+        total_kills INTEGER NOT NULL DEFAULT 0,
+        total_deaths INTEGER NOT NULL DEFAULT 0,
+        total_revives INTEGER NOT NULL DEFAULT 0,
+        total_vespa_kills INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (guild_id, user_id, month_start)
       );
     `);
   }
@@ -85,6 +105,7 @@ class LeaderboardService {
   async recordFightResults(guildId, playerResults) {
     const humanResults = playerResults.filter(player => !player.isBot);
     const now = new Date();
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
     for (const player of humanResults) {
       const won = player.placement === 1 ? 1 : 0;
@@ -140,6 +161,49 @@ class LeaderboardService {
           now
         ]
       );
+
+      await this.pool.query(
+        `
+          INSERT INTO ${PLAYER_STATS_MONTHLY_TABLE} (
+            guild_id,
+            user_id,
+            month_start,
+            display_name,
+            total_games_played,
+            total_wins,
+            total_top3,
+            total_kills,
+            total_deaths,
+            total_revives,
+            total_vespa_kills,
+            updated_at
+          )
+          VALUES ($1, $2, $3, $4, 1, $5, $6, $7, $8, $9, $10, NOW())
+          ON CONFLICT (guild_id, user_id, month_start)
+          DO UPDATE SET
+            display_name = EXCLUDED.display_name,
+            total_games_played = ${PLAYER_STATS_MONTHLY_TABLE}.total_games_played + EXCLUDED.total_games_played,
+            total_wins = ${PLAYER_STATS_MONTHLY_TABLE}.total_wins + EXCLUDED.total_wins,
+            total_top3 = ${PLAYER_STATS_MONTHLY_TABLE}.total_top3 + EXCLUDED.total_top3,
+            total_kills = ${PLAYER_STATS_MONTHLY_TABLE}.total_kills + EXCLUDED.total_kills,
+            total_deaths = ${PLAYER_STATS_MONTHLY_TABLE}.total_deaths + EXCLUDED.total_deaths,
+            total_revives = ${PLAYER_STATS_MONTHLY_TABLE}.total_revives + EXCLUDED.total_revives,
+            total_vespa_kills = ${PLAYER_STATS_MONTHLY_TABLE}.total_vespa_kills + EXCLUDED.total_vespa_kills,
+            updated_at = NOW()
+        `,
+        [
+          guildId,
+          player.id,
+          monthStart,
+          player.name,
+          won,
+          top3,
+          player.kills,
+          player.deaths,
+          player.revives,
+          player.vespaKills
+        ]
+      );
     }
   }
 
@@ -153,6 +217,21 @@ class LeaderboardService {
         LIMIT $2
       `,
       [guildId, limit]
+    );
+
+    return res.rows;
+  }
+
+  async getMonthlyGlobalLeaderboard(guildId, monthStart, limit = 10) {
+    const res = await this.pool.query(
+      `
+        SELECT user_id, display_name, total_wins, total_top3, total_kills, total_vespa_kills, total_games_played
+        FROM ${PLAYER_STATS_MONTHLY_TABLE}
+        WHERE guild_id = $1 AND month_start = $2
+        ORDER BY total_wins DESC, total_top3 DESC, total_kills DESC, total_games_played DESC, updated_at ASC
+        LIMIT $3
+      `,
+      [guildId, monthStart, limit]
     );
 
     return res.rows;
@@ -195,7 +274,7 @@ class LeaderboardService {
     return res.rowCount;
   }
 
-  buildGlobalLeaderboardEmbed(rows) {
+  buildGlobalLeaderboardEmbed(rows, label = 'All Time') {
     const description = rows.length > 0
       ? rows.map((row, index) => `**#${index + 1} ${row.display_name}** - ${row.total_wins} wins | ${row.total_top3} top 3 | ${row.total_kills} kills | ${row.total_vespa_kills} vespa kills`).join('\n')
       : 'No fight records yet.';
@@ -203,7 +282,8 @@ class LeaderboardService {
     return new EmbedBuilder()
       .setColor(0x6b4f2a)
       .setTitle('Global Fight Leaderboard')
-      .setDescription(description);
+      .setDescription(description)
+      .setFooter({ text: label });
   }
 
   buildVespaLeaderboardEmbed(rows) {
