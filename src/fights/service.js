@@ -14,10 +14,44 @@ const JOIN_EMOJI = '☕';
 const MIN_PLAYERS = 2;
 const ROUND_DELAY_MS = 4500;
 const MAX_ROUNDS = 100;
-const VESPA_ROLE_NAME = 'Vespa Killer';
+const VESPA_ROLE_ID = '1428408018709512262';
 const LOBBY_IMAGE_URL = 'https://i.imgur.com/CDFIPS9.jpeg';
 const ALWAYS_TIRED_IMAGE_BASE = 'https://ipfs.chlewigen.ch/ipfs/QmcMWvNKhSzFqbvyCdcaiuBgQLTSEmHXWjys2N1dBUAHFe';
 const ALWAYS_TIRED_SUPPLY = 7777;
+const BOT_FILL_TRIGGER_COUNT = 10;
+const BOT_FILL_COUNT = 15;
+const BOT_NAME_POOL = [
+  'Battery Low Barry',
+  'Brain Fog Brenda',
+  'Snooze Brew Stu',
+  'Mini Vespa Vinnie',
+  'Too Much Snooze Tony',
+  'Pacing Patty',
+  'Coffee Pupils Carla',
+  'Very Tired Vince',
+  'Rainbow Crash Rita',
+  'Toxic Cheeks Tommy',
+  'Electro Skin Eddie',
+  'Pomade Paradise Paulie',
+  'Viking Beard Val',
+  'Bees Beard Benny',
+  'Mutant Mouth Mandy',
+  'Nachoman Nico',
+  'Pillow Hat Penny',
+  'Astronaut Hat Arlo',
+  'Poker Buddy Pete',
+  'Super Espresso Sienna',
+  'Graveyard BG Gary',
+  'Busstop BG Bella',
+  'Lost Crown Luca',
+  'Dark Aura Dana',
+  'Sparkling Aura Sage',
+  'Coffee Sick Sid',
+  'Barista Bruno',
+  'Binary BG Bianca',
+  'Battery Crash Betty',
+  'Restorative Bed Rex'
+];
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -63,6 +97,30 @@ function buildRandomSleepyImageUrl() {
   return `${ALWAYS_TIRED_IMAGE_BASE}/${tokenId}.jpg`;
 }
 
+function getDisplayTextFromInteraction(interaction) {
+  if (interaction.member && typeof interaction.member === 'object' && 'displayName' in interaction.member) {
+    return interaction.member.displayName;
+  }
+
+  return interaction.user.globalName || interaction.user.username;
+}
+
+function formatEliminatedMention(player) {
+  return `~~${player.mention}~~`;
+}
+
+function formatEliminationLine(line) {
+  return `☠️ ${line}`;
+}
+
+function formatCrossedOutNames(players) {
+  const crossedOut = players.map(player => ({
+    ...player,
+    mention: formatEliminatedMention(player)
+  }));
+  return formatNames(crossedOut);
+}
+
 class FightService {
   constructor(client) {
     this.client = client;
@@ -101,7 +159,7 @@ class FightService {
       guildId: interaction.guildId,
       channelId: interaction.channelId,
       hostId: interaction.user.id,
-      hostMention: `<@${interaction.user.id}>`,
+      hostMention: getDisplayTextFromInteraction(interaction),
       type,
       createdAt: Date.now(),
       startAt,
@@ -118,7 +176,8 @@ class FightService {
       playerStats: new Map(),
       totalEliminations: 0,
       totalRevives: 0,
-      eventHistory: []
+      eventHistory: [],
+      botCounter: 0
     };
 
     const embed = this.buildLobbyEmbed(state);
@@ -266,6 +325,15 @@ class FightService {
     await this.refreshLobbyParticipants(state);
     await this.updateLobbyMessage(state);
 
+    if (state.participants.size === 0) {
+      await this.cancelFight(state, 'Fight cancelled. No warriors joined the lobby.');
+      return;
+    }
+
+    if (state.participants.size < BOT_FILL_TRIGGER_COUNT) {
+      this.addBotParticipants(state, BOT_FILL_COUNT);
+    }
+
     if (state.participants.size < MIN_PLAYERS) {
       await this.cancelFight(state, `Fight cancelled. Not enough warriors joined. Minimum required: ${MIN_PLAYERS}.`);
       return;
@@ -280,6 +348,7 @@ class FightService {
         id: player.id,
         mention: player.mention,
         name: player.name,
+        isBot: Boolean(player.isBot),
         kills: 0,
         deaths: 0,
         revives: 0,
@@ -306,7 +375,14 @@ class FightService {
       .setDescription(`The lobby is locked. ${state.alivePlayers.length} warriors shuffle into the chaos.`)
       .addFields(
         { name: 'Host', value: state.hostMention, inline: true },
-        { name: 'Participants', value: participantList.slice(0, 1024), inline: false }
+        { name: 'Participants', value: participantList.slice(0, 1024), inline: false },
+        {
+          name: 'Bot Fill',
+          value: state.alivePlayers.some(player => player.isBot)
+            ? `${state.alivePlayers.filter(player => player.isBot).length} Always Tired bots joined the chaos.`
+            : 'No bots added.',
+          inline: false
+        }
       )
       .setImage(buildRandomSleepyImageUrl());
 
@@ -475,12 +551,12 @@ class FightService {
     const [killer, target] = shuffle(state.alivePlayers).slice(0, 2);
     const phrase = render(pickRandom(killPhrases), {
       p1: killer.mention,
-      p2: target.mention
+      p2: formatEliminatedMention(target)
     });
     const isVespa = /Vespa/i.test(phrase);
     this.eliminatePlayer(state, target.id, { killerId: killer.id, isVespa });
     this.incrementKiller(state, killer.id, isVespa);
-    return phrase;
+    return formatEliminationLine(phrase);
   }
 
   handleDeathEvent(state) {
@@ -489,9 +565,9 @@ class FightService {
     }
 
     const target = pickRandom(state.alivePlayers);
-    const phrase = render(pickRandom(deathPhrases), { p1: target.mention });
+    const phrase = render(pickRandom(deathPhrases), { p1: formatEliminatedMention(target) });
     this.eliminatePlayer(state, target.id, { killerId: null, isVespa: false });
-    return phrase;
+    return formatEliminationLine(phrase);
   }
 
   handleReviveEvent(state) {
@@ -552,13 +628,13 @@ class FightService {
 
     const phrase = render(pickRandom(item.killPhrases), {
       p1: killer.mention,
-      p2: target.mention
+      p2: formatEliminatedMention(target)
     });
     const isVespa = item.tags.includes('vespa');
 
     this.eliminatePlayer(state, target.id, { killerId: killer.id, isVespa });
     this.incrementKiller(state, killer.id, isVespa);
-    return phrase;
+    return formatEliminationLine(phrase);
   }
 
   handleMassKillEvent(state) {
@@ -575,7 +651,7 @@ class FightService {
       this.eliminatePlayer(state, victim.id, { killerId: null, isVespa: false });
     }
 
-    return `**${event.name}**: ${render(event.phrase, { players: formatNames(victims) })}`;
+    return formatEliminationLine(`**${event.name}**: ${render(event.phrase, { players: formatCrossedOutNames(victims) })}`);
   }
 
   handleMassReviveEvent(state) {
@@ -775,7 +851,8 @@ class FightService {
       return {
         id: member.id,
         name: member.displayName,
-        mention: `<@${member.id}>`
+        mention: member.displayName,
+        isBot: false
       };
     } catch {
       const user = await this.client.users.fetch(userId).catch(() => null);
@@ -786,8 +863,29 @@ class FightService {
       return {
         id: user.id,
         name: user.globalName || user.username,
-        mention: `<@${user.id}>`
+        mention: user.globalName || user.username,
+        isBot: false
       };
+    }
+  }
+
+  addBotParticipants(state, count) {
+    const usedNames = new Set(Array.from(state.participants.values()).map(player => player.name));
+    const availableNames = shuffle(BOT_NAME_POOL.filter(name => !usedNames.has(name)));
+
+    for (let index = 0; index < count; index += 1) {
+      const baseName = availableNames[index] || `Always Tired Bot ${state.botCounter + 1}`;
+      const name = usedNames.has(baseName) ? `${baseName} ${state.botCounter + 1}` : baseName;
+      state.botCounter += 1;
+      usedNames.add(name);
+
+      const botId = `bot-${state.createdAt}-${state.botCounter}`;
+      state.participants.set(botId, {
+        id: botId,
+        name,
+        mention: name,
+        isBot: true
+      });
     }
   }
 
@@ -916,8 +1014,8 @@ class FightService {
       return;
     }
 
-    const role = guild.roles.cache.find(entry => entry.name === VESPA_ROLE_NAME)
-      || await guild.roles.fetch().then(roles => roles.find(entry => entry.name === VESPA_ROLE_NAME)).catch(() => null);
+    const role = guild.roles.cache.get(VESPA_ROLE_ID)
+      || await guild.roles.fetch(VESPA_ROLE_ID).catch(() => null);
 
     if (!role) {
       return;
@@ -929,6 +1027,10 @@ class FightService {
     }
 
     for (const stats of vespaKillers) {
+      if (stats.isBot) {
+        continue;
+      }
+
       const member = await guild.members.fetch(stats.id).catch(() => null);
       if (member && !member.roles.cache.has(role.id)) {
         await member.roles.add(role).catch(() => null);
@@ -941,6 +1043,10 @@ class FightService {
   }
 
   async getPlayerAvatarUrl(guild, userId) {
+    if (String(userId).startsWith('bot-')) {
+      return null;
+    }
+
     const member = await guild.members.fetch(userId).catch(() => null);
     if (member) {
       return member.displayAvatarURL({ extension: 'png', size: 256 });
