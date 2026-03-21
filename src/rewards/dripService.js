@@ -40,14 +40,43 @@ class DripService {
     };
   }
 
-  async searchMemberByDiscordId(discordId) {
-    const url = `${DRIP_API_BASE}/realm/${this.realmId}/members/search?type=discord-id&values=${encodeURIComponent(discordId)}`;
-    const response = await fetch(url, { headers: this.getHeaders() });
-    const data = await response.json();
+  async fetchJsonWithFallback(candidates, options) {
+    let lastError = null;
 
-    if (!response.ok) {
-      throw new Error(data?.message || `DRIP member search failed with status ${response.status}`);
+    for (const url of candidates) {
+      try {
+        const response = await fetch(url, options);
+        const data = await response.json().catch(() => ({}));
+
+        if (response.ok) {
+          return { response, data, url };
+        }
+
+        lastError = new Error(data?.message || `HTTP ${response.status}`);
+        lastError.status = response.status;
+        lastError.data = data;
+
+        // Keep trying only when the route itself looks wrong.
+        if (response.status !== 404) {
+          throw lastError;
+        }
+      } catch (error) {
+        lastError = error;
+      }
     }
+
+    throw lastError || new Error('DRIP request failed');
+  }
+
+  async searchMemberByDiscordId(discordId) {
+    const query = `type=discord-id&values=${encodeURIComponent(discordId)}`;
+    const { data } = await this.fetchJsonWithFallback(
+      [
+        `${DRIP_API_BASE}/realm/${this.realmId}/members/search?${query}`,
+        `${DRIP_API_BASE}/realms/${this.realmId}/members/search?${query}`
+      ],
+      { headers: this.getHeaders() }
+    );
 
     return data?.data?.[0] || null;
   }
@@ -58,19 +87,17 @@ class DripService {
       body.clientId = this.clientId;
     }
 
-    const response = await fetch(
-      `${DRIP_API_BASE}/realm/${this.realmId}/members/${memberId}/point-balance`,
+    const { data } = await this.fetchJsonWithFallback(
+      [
+        `${DRIP_API_BASE}/realm/${this.realmId}/members/${memberId}/point-balance`,
+        `${DRIP_API_BASE}/realms/${this.realmId}/members/${memberId}/point-balance`
+      ],
       {
         method: 'PATCH',
         headers: this.getHeaders(),
         body: JSON.stringify(body)
       }
     );
-
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data?.message || `DRIP point award failed with status ${response.status}`);
-    }
 
     return data;
   }
@@ -273,7 +300,7 @@ class DripService {
 
     try {
       const response = await fetch(
-        `${DRIP_API_BASE}/realm/${this.realmId}/members/search?type=discord-id&values=0`,
+        `${DRIP_API_BASE}/realms/${this.realmId}`,
         { headers: this.getHeaders() }
       );
 
