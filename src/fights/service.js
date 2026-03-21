@@ -12,7 +12,8 @@ const {
 
 const JOIN_EMOJI = '☕';
 const MIN_PLAYERS = 2;
-const ROUND_DELAY_MS = 4500;
+const ROUND_DELAY_MS = 15000;
+const START_TO_FIRST_ROUND_DELAY_MS = 15000;
 const MAX_ROUNDS = 100;
 const VESPA_ROLE_ID = '1428408018709512262';
 const LOBBY_IMAGE_URL = 'https://i.imgur.com/CDFIPS9.jpeg';
@@ -388,6 +389,7 @@ class FightService {
 
     await channel.send({ embeds: [startEmbed] });
     await this.clearLobbyReactions(channel.guild, state);
+    await sleep(START_TO_FIRST_ROUND_DELAY_MS);
     await this.runGameLoop(state, channel);
   }
 
