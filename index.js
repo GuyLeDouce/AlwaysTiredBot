@@ -22,6 +22,7 @@ const { FightService } = require('./src/fights/service');
 const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
+const ENABLE_MESSAGE_CONTENT_INTENT = process.env.ENABLE_MESSAGE_CONTENT_INTENT === 'true';
 
 // ---- Postgres Setup ----
 const pool = new Pool({
@@ -247,14 +248,18 @@ const mecfsFacts = [
 
 // ---- Client Setup ----
 
+const clientIntents = [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.GuildMessageReactions
+];
+
+if (ENABLE_MESSAGE_CONTENT_INTENT) {
+  clientIntents.push(GatewayIntentBits.MessageContent);
+}
+
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.GuildMessageReactions,
-    GatewayIntentBits.MessageContent
-  ],
+  intents: clientIntents,
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
@@ -460,6 +465,9 @@ const commands = commandsBuilders.map(cmd => cmd.toJSON());
 
 client.once(Events.ClientReady, async (c) => {
   console.log(`😴 Sleepy Bot logged in as ${c.user.tag}`);
+  if (!ENABLE_MESSAGE_CONTENT_INTENT) {
+    console.log('ℹ️ MessageContent intent disabled. Legacy !commands are unavailable; slash commands still work.');
+  }
 
   try {
     await ensureWalletTable();
@@ -789,6 +797,7 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
 // ---- Legacy Message Command Handling (Option C) ----
 
 client.on('messageCreate', async (message) => {
+  if (!ENABLE_MESSAGE_CONTENT_INTENT) return;
   if (!message.content.startsWith('!') || message.author.bot) return;
 
   const args = message.content.slice(1).trim().split(/ +/);
