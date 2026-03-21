@@ -547,6 +547,15 @@ const commandsBuilders = [
       subcommand
         .setName('reset')
         .setDescription('Reset Vespa leaderboard progress and remove the Vespa Killer role from everyone.')
+    ),
+
+  new SlashCommandBuilder()
+    .setName('coffee')
+    .setDescription('DRIP $COFFEE administration.')
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('test')
+        .setDescription('Test DRIP connectivity and configuration.')
     )
 ];
 
@@ -977,6 +986,31 @@ client.on('interactionCreate', async (interaction) => {
       } catch (err) {
         console.error('Error resetting Vespa system:', err);
         await interaction.editReply('⚠️ Error resetting the Vespa system. Please try again later.');
+      }
+    }
+  }
+
+  if (commandName === 'coffee') {
+    const subcommand = interaction.options.getSubcommand();
+    if (subcommand === 'test') {
+      if (!canResetVespaSystem(interaction)) {
+        await interaction.reply({
+          content: '❌ You do not have permission to use `/coffee test`.',
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      try {
+        const result = await dripService.testConnection();
+        await interaction.editReply({
+          embeds: [dripService.buildConnectionTestEmbed(result)]
+        });
+      } catch (err) {
+        console.error('Error testing DRIP connection:', err);
+        await interaction.editReply('⚠️ Error testing DRIP connection. Please try again later.');
       }
     }
   }

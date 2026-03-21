@@ -261,6 +261,73 @@ class DripService {
         }
       );
   }
+
+  async testConnection() {
+    if (!this.isConfigured()) {
+      return {
+        ok: false,
+        reason: 'missing_config',
+        message: 'DRIP_API_TOKEN or DRIP_REALM_ID is missing.'
+      };
+    }
+
+    try {
+      const response = await fetch(
+        `${DRIP_API_BASE}/realm/${this.realmId}/members/search?type=discord-id&values=0`,
+        { headers: this.getHeaders() }
+      );
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        return {
+          ok: false,
+          reason: 'api_error',
+          message: data?.message || `HTTP ${response.status}`
+        };
+      }
+
+      return {
+        ok: true,
+        reason: null,
+        message: 'Connected to DRIP successfully.',
+        data
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'network_error',
+        message: error?.message || String(error)
+      };
+    }
+  }
+
+  buildConnectionTestEmbed(result) {
+    return new EmbedBuilder()
+      .setColor(result.ok ? 0x4a7a44 : 0xb04a3a)
+      .setTitle('DRIP Connection Test')
+      .addFields(
+        {
+          name: 'Status',
+          value: result.ok ? 'Connected' : 'Failed',
+          inline: true
+        },
+        {
+          name: 'Realm',
+          value: this.realmId || 'Not configured',
+          inline: true
+        },
+        {
+          name: 'Client ID',
+          value: this.clientId || 'Not configured',
+          inline: true
+        },
+        {
+          name: 'Result',
+          value: result.message.slice(0, 1024),
+          inline: false
+        }
+      );
+  }
 }
 
 module.exports = {
