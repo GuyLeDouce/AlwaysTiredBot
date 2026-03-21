@@ -22,10 +22,11 @@ function floorSplit(total, weights) {
 }
 
 class DripService {
-  constructor({ apiToken, realmId, clientId, logChannelId = null }) {
+  constructor({ apiToken, realmId, clientId, currencyId, logChannelId = null }) {
     this.apiToken = apiToken;
     this.realmId = realmId;
     this.clientId = clientId;
+    this.currencyId = currencyId;
     this.logChannelId = logChannelId;
   }
 
@@ -82,11 +83,11 @@ class DripService {
   }
 
   resolveCoffeeCurrencyId() {
-    if (!this.clientId) {
-      throw new Error('DRIP_CLIENT_ID is missing. It is required as the $COFFEE currency identifier.');
+    if (!this.currencyId) {
+      throw new Error('DRIP_CURRENCY_ID is missing. It is required as the $COFFEE currency identifier.');
     }
 
-    return this.clientId;
+    return this.currencyId;
   }
 
   async awardTokensToMemberId(memberId, tokens) {
@@ -344,6 +345,14 @@ class DripService {
       };
     }
 
+    if (!this.currencyId) {
+      return {
+        ok: false,
+        reason: 'missing_currency',
+        message: 'DRIP_CURRENCY_ID is missing.'
+      };
+    }
+
     try {
       const response = await fetch(
         `${DRIP_API_BASE}/realms/${this.realmId}`,
@@ -392,6 +401,11 @@ class DripService {
         {
           name: 'Client ID',
           value: this.clientId || 'Not configured',
+          inline: true
+        },
+        {
+          name: 'Currency ID',
+          value: this.currencyId || 'Not configured',
           inline: true
         },
         {

@@ -28,6 +28,7 @@ const DATABASE_URL_LEADERBOARD = process.env.DATABASE_URL_LEADERBOARD || DATABAS
 const DRIP_API_TOKEN = process.env.DRIP_API_TOKEN;
 const DRIP_REALM_ID = process.env.DRIP_REALM_ID;
 const DRIP_CLIENT_ID = process.env.DRIP_CLIENT_ID;
+const DRIP_CURRENCY_ID = process.env.DRIP_CURRENCY_ID;
 const DRIP_LOG_CHANNEL_ID = process.env.DRIP_LOG_CHANNEL_ID;
 const ENABLE_MESSAGE_CONTENT_INTENT = process.env.ENABLE_MESSAGE_CONTENT_INTENT === 'true';
 const FIGHT_ALLOWED_USER_IDS = new Set(['826581856400179210', '923567278610595871']);
@@ -282,6 +283,7 @@ const dripService = new DripService({
   apiToken: DRIP_API_TOKEN,
   realmId: DRIP_REALM_ID,
   clientId: DRIP_CLIENT_ID,
+  currencyId: DRIP_CURRENCY_ID,
   logChannelId: DRIP_LOG_CHANNEL_ID
 });
 const fightService = new FightService(client, leaderboardService, dripService);
