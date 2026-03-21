@@ -27,6 +27,7 @@ class DripService {
     this.realmId = realmId;
     this.clientId = clientId;
     this.logChannelId = logChannelId;
+    this.cachedCoffeeCurrencyId = null;
   }
 
   isConfigured() {
@@ -81,25 +82,75 @@ class DripService {
     return data?.data?.[0] || null;
   }
 
-  async awardTokensToMemberId(memberId, tokens) {
-    const body = { tokens };
-    if (this.clientId) {
-      body.clientId = this.clientId;
-    }
-
+  async fetchRealmPoints() {
     const { data } = await this.fetchJsonWithFallback(
       [
-        `${DRIP_API_BASE}/realm/${this.realmId}/members/${memberId}/point-balance`,
-        `${DRIP_API_BASE}/realms/${this.realmId}/members/${memberId}/point-balance`
+        `${DRIP_API_BASE}/realm/${this.realmId}/points`,
+        `${DRIP_API_BASE}/realms/${this.realmId}/points`
       ],
-      {
-        method: 'PATCH',
-        headers: this.getHeaders(),
-        body: JSON.stringify(body)
-      }
+      { headers: this.getHeaders() }
     );
 
-    return data;
+    return Array.isArray(data?.data) ? data.data : [];
+  }
+
+  async resolveCoffeeCurrencyId() {
+    if (this.cachedCoffeeCurrencyId) {
+      return this.cachedCoffeeCurrencyId;
+    }
+
+    const points = await this.fetchRealmPoints();
+    const coffeePoint = points.find(point => {
+      const name = String(point?.name || '').trim().toLowerCase();
+      return name === '$coffee' || name === 'coffee';
+    });
+
+    if (!coffeePoint?.id) {
+      throw new Error('Could not find a DRIP realm point named $COFFEE or COFFEE.');
+    }
+
+    this.cachedCoffeeCurrencyId = coffeePoint.id;
+    return this.cachedCoffeeCurrencyId;
+  }
+
+  async awardTokensToMemberId(memberId, tokens) {
+    const currencyId = await this.resolveCoffeeCurrencyId();
+
+    try {
+      const { data } = await this.fetchJsonWithFallback(
+        [
+          `${DRIP_API_BASE}/realms/${this.realmId}/members/${memberId}/balance`
+        ],
+        {
+          method: 'PATCH',
+          headers: this.getHeaders(),
+          body: JSON.stringify({
+            amount: tokens,
+            currencyId,
+            ...(this.clientId ? { initiatorId: this.clientId } : {})
+          })
+        }
+      );
+
+      return data;
+    } catch (balanceError) {
+      const { data } = await this.fetchJsonWithFallback(
+        [
+          `${DRIP_API_BASE}/realm/${this.realmId}/members/${memberId}/point-balance`,
+          `${DRIP_API_BASE}/realms/${this.realmId}/members/${memberId}/point-balance`
+        ],
+        {
+          method: 'PATCH',
+          headers: this.getHeaders(),
+          body: JSON.stringify({
+            tokens,
+            realmPointId: currencyId
+          })
+        }
+      );
+
+      return data;
+    }
   }
 
   async awardTokensByDiscordId(discordId, tokens) {
