@@ -27,7 +27,6 @@ class DripService {
     this.realmId = realmId;
     this.clientId = clientId;
     this.logChannelId = logChannelId;
-    this.cachedCoffeeCurrencyId = null;
   }
 
   isConfigured() {
@@ -82,39 +81,16 @@ class DripService {
     return data?.data?.[0] || null;
   }
 
-  async fetchRealmPoints() {
-    const { data } = await this.fetchJsonWithFallback(
-      [
-        `${DRIP_API_BASE}/realm/${this.realmId}/points`,
-        `${DRIP_API_BASE}/realms/${this.realmId}/points`
-      ],
-      { headers: this.getHeaders() }
-    );
-
-    return Array.isArray(data?.data) ? data.data : [];
-  }
-
-  async resolveCoffeeCurrencyId() {
-    if (this.cachedCoffeeCurrencyId) {
-      return this.cachedCoffeeCurrencyId;
+  resolveCoffeeCurrencyId() {
+    if (!this.clientId) {
+      throw new Error('DRIP_CLIENT_ID is missing. It is required as the $COFFEE currency identifier.');
     }
 
-    const points = await this.fetchRealmPoints();
-    const coffeePoint = points.find(point => {
-      const name = String(point?.name || '').trim().toLowerCase();
-      return name === '$coffee' || name === 'coffee';
-    });
-
-    if (!coffeePoint?.id) {
-      throw new Error('Could not find a DRIP realm point named $COFFEE or COFFEE.');
-    }
-
-    this.cachedCoffeeCurrencyId = coffeePoint.id;
-    return this.cachedCoffeeCurrencyId;
+    return this.clientId;
   }
 
   async awardTokensToMemberId(memberId, tokens) {
-    const currencyId = await this.resolveCoffeeCurrencyId();
+    const currencyId = this.resolveCoffeeCurrencyId();
 
     try {
       const { data } = await this.fetchJsonWithFallback(
@@ -126,8 +102,7 @@ class DripService {
           headers: this.getHeaders(),
           body: JSON.stringify({
             amount: tokens,
-            currencyId,
-            ...(this.clientId ? { initiatorId: this.clientId } : {})
+            currencyId
           })
         }
       );
