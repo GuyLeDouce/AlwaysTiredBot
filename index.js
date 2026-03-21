@@ -18,10 +18,12 @@ const fs = require('fs');
 const { Pool } = require('pg');
 const Jimp = require('jimp');
 const { FightService } = require('./src/fights/service');
+const { LeaderboardService } = require('./src/leaderboards/service');
 
 const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
+const DATABASE_URL_LEADERBOARD = process.env.DATABASE_URL_LEADERBOARD || DATABASE_URL;
 const ENABLE_MESSAGE_CONTENT_INTENT = process.env.ENABLE_MESSAGE_CONTENT_INTENT === 'true';
 const FIGHT_ALLOWED_USER_IDS = new Set(['826581856400179210', '923567278610595871']);
 const FIGHT_ALLOWED_ROLE_ID = '1404835877963825204';
@@ -30,6 +32,11 @@ const FIGHT_ALLOWED_ROLE_ID = '1404835877963825204';
 const pool = new Pool({
   connectionString: DATABASE_URL,
   // For local dev without SSL, set PGSSL_DISABLE=true
+  ssl: process.env.PGSSL_DISABLE === 'true' ? false : { rejectUnauthorized: false }
+});
+
+const leaderboardPool = new Pool({
+  connectionString: DATABASE_URL_LEADERBOARD,
   ssl: process.env.PGSSL_DISABLE === 'true' ? false : { rejectUnauthorized: false }
 });
 
@@ -265,7 +272,8 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
-const fightService = new FightService(client);
+const leaderboardService = new LeaderboardService(leaderboardPool);
+const fightService = new FightService(client, leaderboardService);
 
 // Legacy JSON walletLinks as fallback
 let walletLinks = {};
@@ -297,6 +305,18 @@ function canManageFights(interaction) {
   }
 
   return memberRoles.cache?.has(FIGHT_ALLOWED_ROLE_ID) ?? false;
+}
+
+function canResetVespaSystem(interaction) {
+  if (canManageFights(interaction)) {
+    return true;
+  }
+
+  const memberPermissions = interaction.memberPermissions;
+  return Boolean(
+    memberPermissions?.has(PermissionsBitField.Flags.Administrator)
+    || memberPermissions?.has(PermissionsBitField.Flags.ManageRoles)
+  );
 }
 
 // Fetch token IDs for a single wallet (Etherscan V2)
@@ -475,7 +495,24 @@ const commandsBuilders = [
 
   new SlashCommandBuilder()
     .setName('startfight')
-    .setDescription('Start your staff-created ME/CFS Warriors fight immediately.')
+    .setDescription('Start your staff-created ME/CFS Warriors fight immediately.'),
+
+  new SlashCommandBuilder()
+    .setName('leaderboard')
+    .setDescription('Show the global ME/CFS Warriors leaderboard.'),
+
+  new SlashCommandBuilder()
+    .setName('vespaboard')
+    .setDescription('Show the unlocked Vespa leaderboard.'),
+
+  new SlashCommandBuilder()
+    .setName('vespa')
+    .setDescription('Vespa leaderboard administration.')
+    .addSubcommand(subcommand =>
+      subcommand
+        .setName('reset')
+        .setDescription('Reset Vespa leaderboard progress and remove the Vespa Killer role from everyone.')
+    )
 ];
 
 const commands = commandsBuilders.map(cmd => cmd.toJSON());
@@ -493,6 +530,13 @@ client.once(Events.ClientReady, async (c) => {
     console.log('✅ wallet_links table ready.');
   } catch (err) {
     console.error('❌ Error ensuring wallet_links table:', err);
+  }
+
+  try {
+    await leaderboardService.ensureTable();
+    console.log('✅ fight_player_stats table ready.');
+  } catch (err) {
+    console.error('❌ Error ensuring fight_player_stats table:', err);
   }
 
   try {
@@ -808,6 +852,68 @@ client.on('interactionCreate', async (interaction) => {
           content: '⚠️ Error starting the fight. Please try again later.',
           flags: MessageFlags.Ephemeral
         });
+      }
+    }
+  }
+
+  if (commandName === 'leaderboard') {
+    try {
+      const rows = await leaderboardService.getGlobalLeaderboard(interaction.guildId, 10);
+      await interaction.reply({ embeds: [leaderboardService.buildGlobalLeaderboardEmbed(rows)] });
+    } catch (err) {
+      console.error('Error fetching global leaderboard:', err);
+      if (!interaction.replied) {
+        await interaction.reply({
+          content: '⚠️ Error loading the leaderboard. Please try again later.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
+    }
+  }
+
+  if (commandName === 'vespaboard') {
+    try {
+      const rows = await leaderboardService.getVespaLeaderboard(interaction.guildId, 10);
+      await interaction.reply({ embeds: [leaderboardService.buildVespaLeaderboardEmbed(rows)] });
+    } catch (err) {
+      console.error('Error fetching Vespa leaderboard:', err);
+      if (!interaction.replied) {
+        await interaction.reply({
+          content: '⚠️ Error loading the Vespa leaderboard. Please try again later.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
+    }
+  }
+
+  if (commandName === 'vespa') {
+    const subcommand = interaction.options.getSubcommand();
+    if (subcommand === 'reset') {
+      if (!canResetVespaSystem(interaction)) {
+        await interaction.reply({
+          content: '❌ You do not have permission to use `/vespa reset`.',
+          flags: MessageFlags.Ephemeral
+        });
+        return;
+      }
+
+      await interaction.deferReply();
+
+      try {
+        const roleResult = await leaderboardService.removeVespaRoleFromEveryone(interaction.guild);
+        const recordResetCount = await leaderboardService.resetVespaProgress(interaction.guildId);
+        await interaction.editReply({
+          embeds: [
+            leaderboardService.buildVespaResetEmbed(
+              roleResult.removed,
+              recordResetCount,
+              roleResult.roleFound
+            )
+          ]
+        });
+      } catch (err) {
+        console.error('Error resetting Vespa system:', err);
+        await interaction.editReply('⚠️ Error resetting the Vespa system. Please try again later.');
       }
     }
   }

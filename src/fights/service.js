@@ -126,8 +126,9 @@ function formatCrossedOutNames(players) {
 }
 
 class FightService {
-  constructor(client) {
+  constructor(client, leaderboardService = null) {
     this.client = client;
+    this.leaderboardService = leaderboardService;
     this.activeFights = new Map();
   }
 
@@ -182,7 +183,9 @@ class FightService {
       totalRevives: 0,
       eventHistory: [],
       botCounter: 0,
-      totalVespaKills: 0
+      totalVespaKills: 0,
+      pendingUnlocks: [],
+      persistentVespaProgress: new Map()
     };
 
     const embed = this.buildLobbyEmbed(state);
@@ -348,6 +351,11 @@ class FightService {
     state.alivePlayers = players.map(player => ({ ...player, items: [] }));
     state.deadPlayers = [];
 
+    if (this.leaderboardService) {
+      const humanIds = state.alivePlayers.filter(player => !player.isBot).map(player => player.id);
+      state.persistentVespaProgress = await this.leaderboardService.preloadVespaProgress(state.guildId, humanIds);
+    }
+
     for (const player of state.alivePlayers) {
       state.playerStats.set(player.id, {
         id: player.id,
@@ -419,6 +427,7 @@ class FightService {
         .setImage(buildRandomSleepyImageUrl());
 
       await channel.send({ embeds: [embed] });
+      await this.flushPendingUnlocks(state, channel);
       await sleep(ROUND_DELAY_MS);
     }
 
@@ -702,7 +711,32 @@ class FightService {
     if (isVespa) {
       killerStats.vespaKills += 1;
       state.totalVespaKills += 1;
+      this.trackVespaUnlock(state, killerId);
     }
+  }
+
+  trackVespaUnlock(state, killerId) {
+    const killerStats = state.playerStats.get(killerId);
+    if (!killerStats || killerStats.isBot) {
+      return;
+    }
+
+    const currentProgress = state.persistentVespaProgress.get(killerId) || {
+      totalVespaKills: 0,
+      hasVespaUnlocked: false
+    };
+
+    const isFirstLifetimeUnlock = !currentProgress.hasVespaUnlocked && currentProgress.totalVespaKills === 0;
+    currentProgress.totalVespaKills += 1;
+    if (isFirstLifetimeUnlock) {
+      currentProgress.hasVespaUnlocked = true;
+      state.pendingUnlocks.push({
+        playerId: killerId,
+        playerName: killerStats.mention
+      });
+    }
+
+    state.persistentVespaProgress.set(killerId, currentProgress);
   }
 
   getAvailableKillPhrases(state) {
@@ -866,8 +900,54 @@ class FightService {
       );
 
     await channel.send({ embeds: [resultsEmbed] });
+
+    if (this.leaderboardService) {
+      try {
+        await this.leaderboardService.recordFightResults(
+          state.guildId,
+          [...state.playerStats.values()].map(stats => ({
+            id: stats.id,
+            name: stats.name,
+            isBot: stats.isBot,
+            placement: stats.placement,
+            kills: stats.kills,
+            deaths: stats.deaths,
+            revives: stats.revives,
+            vespaKills: stats.vespaKills
+          }))
+        );
+      } catch (err) {
+        console.error('Failed to record fight leaderboard stats:', err);
+      }
+    }
+
     await this.assignVespaRole(channel.guild, vespaKillers);
     this.activeFights.delete(state.guildId);
+  }
+
+  async flushPendingUnlocks(state, channel) {
+    if (!this.leaderboardService || state.pendingUnlocks.length === 0) {
+      return;
+    }
+
+    const unlocks = [...state.pendingUnlocks];
+    state.pendingUnlocks = [];
+
+    for (const unlock of unlocks) {
+      await this.leaderboardService.markVespaUnlocked(
+        state.guildId,
+        unlock.playerId,
+        unlock.playerName
+      ).catch(err => {
+        console.error('Failed to persist Vespa unlock state:', err);
+      });
+
+      await channel.send({
+        embeds: [this.leaderboardService.buildVespaUnlockEmbed(unlock.playerName)]
+      }).catch(() => null);
+
+      await this.leaderboardService.assignVespaRole(channel.guild, unlock.playerId).catch(() => null);
+    }
   }
 
   findPlacement(placements, place) {
