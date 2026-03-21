@@ -21,6 +21,9 @@ const ALWAYS_TIRED_IMAGE_BASE = 'https://ipfs.chlewigen.ch/ipfs/QmcMWvNKhSzFqbvy
 const ALWAYS_TIRED_SUPPLY = 7777;
 const BOT_FILL_TRIGGER_COUNT = 10;
 const BOT_FILL_COUNT = 15;
+const MAX_VESPA_KILLS_PER_GAME = 2;
+const VESPA_KILL_PHRASE_CHANCE = 0.12;
+const MINI_VESPA_UNLOCK_CHANCE = 0.18;
 const BOT_NAME_POOL = [
   'Battery Low Barry',
   'Brain Fog Brenda',
@@ -178,7 +181,8 @@ class FightService {
       totalEliminations: 0,
       totalRevives: 0,
       eventHistory: [],
-      botCounter: 0
+      botCounter: 0,
+      totalVespaKills: 0
     };
 
     const embed = this.buildLobbyEmbed(state);
@@ -551,7 +555,12 @@ class FightService {
     }
 
     const [killer, target] = shuffle(state.alivePlayers).slice(0, 2);
-    const phrase = render(pickRandom(killPhrases), {
+    const availableKillPhrases = this.getAvailableKillPhrases(state);
+    if (availableKillPhrases.length === 0) {
+      return null;
+    }
+
+    const phrase = render(pickRandom(availableKillPhrases), {
       p1: killer.mention,
       p2: formatEliminatedMention(target)
     });
@@ -598,16 +607,19 @@ class FightService {
     }
 
     const player = pickRandom(state.alivePlayers);
-    const availableItems = items.filter(item => !player.items.includes(item.name));
+    const availableItems = this.getAvailableUnlockItems(state, player);
     if (availableItems.length === 0) {
       return this.handleLifeEvent(state);
     }
 
     const item = pickRandom(availableItems);
-    player.items.push(item.name);
+    player.items.push({
+      name: item.name,
+      readyRound: state.round + 1
+    });
     const stats = state.playerStats.get(player.id);
     stats.itemsUnlocked.push(item.name);
-    return render(pickRandom(item.unlockPhrases), { p1: player.mention });
+    return `🎒 ${render(pickRandom(item.unlockPhrases), { p1: player.mention })}`;
   }
 
   handleItemKillEvent(state) {
@@ -623,7 +635,10 @@ class FightService {
     }
 
     const target = pickRandom(targets);
-    const item = pickRandom(items.filter(entry => killer.items.includes(entry.name)));
+    const readyItemNames = killer.items
+      .filter(entry => entry.readyRound <= state.round)
+      .map(entry => entry.name);
+    const item = pickRandom(items.filter(entry => readyItemNames.includes(entry.name)));
     if (!item) {
       return null;
     }
@@ -673,7 +688,8 @@ class FightService {
   }
 
   getAlivePlayersWithItems(state) {
-    return state.alivePlayers.filter(player => Array.isArray(player.items) && player.items.length > 0);
+    return state.alivePlayers.filter(player => Array.isArray(player.items)
+      && player.items.some(entry => entry.readyRound <= state.round));
   }
 
   incrementKiller(state, killerId, isVespa) {
@@ -685,7 +701,38 @@ class FightService {
     killerStats.kills += 1;
     if (isVespa) {
       killerStats.vespaKills += 1;
+      state.totalVespaKills += 1;
     }
+  }
+
+  getAvailableKillPhrases(state) {
+    const vespaPhrases = killPhrases.filter(phrase => /Vespa/i.test(phrase));
+    const nonVespaPhrases = killPhrases.filter(phrase => !/Vespa/i.test(phrase));
+
+    if (state.totalVespaKills >= MAX_VESPA_KILLS_PER_GAME) {
+      return nonVespaPhrases;
+    }
+
+    if (Math.random() > VESPA_KILL_PHRASE_CHANCE) {
+      return nonVespaPhrases;
+    }
+
+    return [...nonVespaPhrases, ...vespaPhrases];
+  }
+
+  getAvailableUnlockItems(state, player) {
+    const unlockedItemNames = new Set(player.items.map(entry => entry.name));
+    const allAvailableItems = items.filter(item => !unlockedItemNames.has(item.name));
+
+    if (state.totalVespaKills >= MAX_VESPA_KILLS_PER_GAME) {
+      return allAvailableItems.filter(item => !item.tags.includes('vespa'));
+    }
+
+    if (Math.random() > MINI_VESPA_UNLOCK_CHANCE) {
+      return allAvailableItems.filter(item => !item.tags.includes('vespa'));
+    }
+
+    return allAvailableItems;
   }
 
   eliminatePlayer(state, playerId, { killerId, isVespa }) {
