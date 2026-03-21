@@ -125,6 +125,26 @@ class DripService {
     };
   }
 
+  async manualAwardByDiscordId(discordId, tokens) {
+    if (!this.isConfigured()) {
+      return {
+        success: false,
+        reason: 'missing_config',
+        discordId,
+        displayName: null,
+        tokens
+      };
+    }
+
+    return this.awardTokensByDiscordId(discordId, tokens).catch(error => ({
+      success: false,
+      reason: error?.message || String(error),
+      discordId,
+      displayName: null,
+      tokens
+    }));
+  }
+
   buildPayoutPlan(participantCount, rankedFinishers, vespaEligibleFinisher) {
     const totalPrizePool = participantCount * 15;
     const podiumPool = participantCount * 14;
@@ -351,6 +371,50 @@ class DripService {
         {
           name: 'Result',
           value: result.message.slice(0, 1024),
+          inline: false
+        }
+      );
+  }
+
+  buildManualAwardEmbed({ targetName, amount, result, actorName }) {
+    return new EmbedBuilder()
+      .setColor(result.success ? 0x4a7a44 : 0xb04a3a)
+      .setTitle('$COFFEE Gift')
+      .setDescription(
+        result.success
+          ? `${actorName} sent ${amount} $COFFEE to ${targetName}.`
+          : `Failed to send ${amount} $COFFEE to ${targetName}.`
+      )
+      .addFields({
+        name: 'Result',
+        value: result.success ? 'Points awarded successfully.' : (result.reason || 'Unknown error').slice(0, 1024),
+        inline: false
+      });
+  }
+
+  buildManualAwardLogEmbed({ targetName, amount, result, actorName, actorId, targetId }) {
+    return new EmbedBuilder()
+      .setColor(result.success ? 0x4a7a44 : 0xb04a3a)
+      .setTitle('DRIP Manual Award Receipt')
+      .setDescription(
+        result.success
+          ? `${actorName} manually awarded ${amount} $COFFEE to ${targetName}.`
+          : `${actorName} attempted to manually award ${amount} $COFFEE to ${targetName}.`
+      )
+      .addFields(
+        {
+          name: 'Actor',
+          value: `${actorName} (${actorId})`,
+          inline: false
+        },
+        {
+          name: 'Recipient',
+          value: `${targetName} (${targetId})`,
+          inline: false
+        },
+        {
+          name: 'Result',
+          value: result.success ? 'Points awarded successfully.' : (result.reason || 'Unknown error').slice(0, 1024),
           inline: false
         }
       );

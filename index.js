@@ -556,6 +556,23 @@ const commandsBuilders = [
       subcommand
         .setName('test')
         .setDescription('Test DRIP connectivity and configuration.')
+    ),
+
+  new SlashCommandBuilder()
+    .setName('sip')
+    .setDescription('Gift a user DRIP $COFFEE.')
+    .addUserOption(option =>
+      option
+        .setName('user')
+        .setDescription('The Discord user to receive $COFFEE.')
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName('amount')
+        .setDescription('Amount of $COFFEE to gift.')
+        .setMinValue(1)
+        .setRequired(true)
     )
 ];
 
@@ -1012,6 +1029,59 @@ client.on('interactionCreate', async (interaction) => {
         console.error('Error testing DRIP connection:', err);
         await interaction.editReply('⚠️ Error testing DRIP connection. Please try again later.');
       }
+    }
+  }
+
+  if (commandName === 'sip') {
+    if (!canResetVespaSystem(interaction)) {
+      await interaction.reply({
+        content: '❌ You do not have permission to use `/sip`.',
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    const targetUser = interaction.options.getUser('user', true);
+    const amount = interaction.options.getInteger('amount', true);
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    try {
+      const result = await dripService.manualAwardByDiscordId(targetUser.id, amount);
+      const targetName = targetUser.globalName || targetUser.username;
+      const actorName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+
+      await interaction.editReply({
+        embeds: [
+          dripService.buildManualAwardEmbed({
+            targetName,
+            amount,
+            result,
+            actorName
+          })
+        ]
+      });
+
+      if (dripService.logChannelId) {
+        const logChannel = await client.channels.fetch(dripService.logChannelId).catch(() => null);
+        if (logChannel && logChannel.isTextBased()) {
+          await logChannel.send({
+            embeds: [
+              dripService.buildManualAwardLogEmbed({
+                targetName,
+                amount,
+                result,
+                actorName,
+                actorId: interaction.user.id,
+                targetId: targetUser.id
+              })
+            ]
+          }).catch(() => null);
+        }
+      }
+    } catch (err) {
+      console.error('Error running /sip:', err);
+      await interaction.editReply('⚠️ Error sending $COFFEE. Please try again later.');
     }
   }
 });
