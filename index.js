@@ -23,6 +23,8 @@ const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
 const DATABASE_URL = process.env.DATABASE_URL;
 const ENABLE_MESSAGE_CONTENT_INTENT = process.env.ENABLE_MESSAGE_CONTENT_INTENT === 'true';
+const FIGHT_ALLOWED_USER_IDS = new Set(['826581856400179210', '923567278610595871']);
+const FIGHT_ALLOWED_ROLE_ID = '1404835877963825204';
 
 // ---- Postgres Setup ----
 const pool = new Pool({
@@ -278,6 +280,23 @@ function buildSleepyMessage(tokenId, includeFact = false) {
   const randomFact = mecfsFacts[Math.floor(Math.random() * mecfsFacts.length)];
   const text = `Token ID: ${tokenId}` + (includeFact ? `\n\n💡 **ME/CFS Fact:** ${randomFact}` : '');
   return { text, imgUrl };
+}
+
+function canManageFights(interaction) {
+  if (FIGHT_ALLOWED_USER_IDS.has(interaction.user.id)) {
+    return true;
+  }
+
+  const memberRoles = interaction.member?.roles;
+  if (!memberRoles) {
+    return false;
+  }
+
+  if (Array.isArray(memberRoles)) {
+    return memberRoles.includes(FIGHT_ALLOWED_ROLE_ID);
+  }
+
+  return memberRoles.cache?.has(FIGHT_ALLOWED_ROLE_ID) ?? false;
 }
 
 // Fetch token IDs for a single wallet (Etherscan V2)
@@ -750,6 +769,14 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (commandName === 'fight') {
+    if (!canManageFights(interaction)) {
+      await interaction.reply({
+        content: '❌ You do not have permission to use `/fight`.',
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
     try {
       await fightService.createFightLobby(interaction);
     } catch (err) {
@@ -764,6 +791,14 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (commandName === 'startfight') {
+    if (!canManageFights(interaction)) {
+      await interaction.reply({
+        content: '❌ You do not have permission to use `/startfight`.',
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
     try {
       await fightService.startStaffFight(interaction);
     } catch (err) {
