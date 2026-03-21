@@ -5,6 +5,7 @@
 const {
   Client,
   GatewayIntentBits,
+  Partials,
   PermissionsBitField,
   REST,
   Routes,
@@ -16,6 +17,7 @@ const fetch = require('node-fetch');
 const fs = require('fs');
 const { Pool } = require('pg');
 const Jimp = require('jimp');
+const { FightService } = require('./src/fights/service');
 
 const DISCORD_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
@@ -248,10 +250,15 @@ const mecfsFacts = [
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
     GatewayIntentBits.MessageContent
-  ]
+  ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
+
+const fightService = new FightService(client);
 
 // Legacy JSON walletLinks as fallback
 let walletLinks = {};
@@ -418,7 +425,33 @@ const commandsBuilders = [
 
   new SlashCommandBuilder()
     .setName('grid')
-    .setDescription('Generate a grid image of all your Always Tired NFTs (up to 300, from all linked wallets).')
+    .setDescription('Generate a grid image of all your Always Tired NFTs (up to 300, from all linked wallets).'),
+
+  new SlashCommandBuilder()
+    .setName('fight')
+    .setDescription('Create a new ME/CFS Warriors elimination fight lobby.')
+    .addStringOption(option =>
+      option
+        .setName('type')
+        .setDescription('Choose whether the fight starts on a timer or only when manually started.')
+        .addChoices(
+          { name: 'staff', value: 'staff' },
+          { name: 'normal', value: 'normal' }
+        )
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName('time')
+        .setDescription('Countdown in seconds for normal fights. Ignored for staff fights.')
+        .setMinValue(15)
+        .setMaxValue(3600)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('startfight')
+    .setDescription('Start your staff-created ME/CFS Warriors fight immediately.')
 ];
 
 const commands = commandsBuilders.map(cmd => cmd.toJSON());
@@ -706,6 +739,50 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply('⚠️ Error creating your grid. Please try again later.');
       }
     }
+  }
+
+  if (commandName === 'fight') {
+    try {
+      await fightService.createFightLobby(interaction);
+    } catch (err) {
+      console.error('Error creating fight lobby:', err);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: '⚠️ Error creating the fight lobby. Please try again later.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
+    }
+  }
+
+  if (commandName === 'startfight') {
+    try {
+      await fightService.startStaffFight(interaction);
+    } catch (err) {
+      console.error('Error starting fight:', err);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({
+          content: '⚠️ Error starting the fight. Please try again later.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
+    }
+  }
+});
+
+client.on(Events.MessageReactionAdd, async (reaction, user) => {
+  try {
+    await fightService.handleReactionAdd(reaction, user);
+  } catch (err) {
+    console.error('Error handling fight reaction add:', err);
+  }
+});
+
+client.on(Events.MessageReactionRemove, async (reaction, user) => {
+  try {
+    await fightService.handleReactionRemove(reaction, user);
+  } catch (err) {
+    console.error('Error handling fight reaction remove:', err);
   }
 });
 
