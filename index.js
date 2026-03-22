@@ -576,6 +576,13 @@ const commandsBuilders = [
         .setMinValue(1)
         .setRequired(true)
     )
+    .addStringOption(option =>
+      option
+        .setName('reason')
+        .setDescription('Optional reason for the sip.')
+        .setMaxLength(200)
+        .setRequired(false)
+    )
 ];
 
 const commands = commandsBuilders.map(cmd => cmd.toJSON());
@@ -1045,6 +1052,7 @@ client.on('interactionCreate', async (interaction) => {
 
     const targetUser = interaction.options.getUser('user', true);
     const amount = interaction.options.getInteger('amount', true);
+    const reason = interaction.options.getString('reason');
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -1059,7 +1067,8 @@ client.on('interactionCreate', async (interaction) => {
             targetName,
             amount,
             result,
-            actorName
+            actorName,
+            reason
           })
         ]
       });
@@ -1075,7 +1084,8 @@ client.on('interactionCreate', async (interaction) => {
                 result,
                 actorName,
                 actorId: interaction.user.id,
-                targetId: targetUser.id
+                targetId: targetUser.id,
+                reason
               })
             ]
           }).catch(() => null);

@@ -416,13 +416,17 @@ class DripService {
       );
   }
 
-  buildManualAwardEmbed({ targetName, amount, result, actorName }) {
+  buildManualAwardEmbed({ targetName, amount, result, actorName, reason = null }) {
+    const successLine = reason
+      ? `${actorName} manually awarded a ${amount} $COFFEE sip to ${targetName} for ${reason}.`
+      : `${actorName} manually awarded a ${amount} $COFFEE sip to ${targetName}.`;
+
     return new EmbedBuilder()
       .setColor(result.success ? 0x4a7a44 : 0xb04a3a)
       .setTitle('$COFFEE Gift')
       .setDescription(
         result.success
-          ? `${actorName} sent ${amount} $COFFEE to ${targetName}.`
+          ? successLine
           : `Failed to send ${amount} $COFFEE to ${targetName}.`
       )
       .addFields({
@@ -432,13 +436,17 @@ class DripService {
       });
   }
 
-  buildManualAwardLogEmbed({ targetName, amount, result, actorName, actorId, targetId }) {
+  buildManualAwardLogEmbed({ targetName, amount, result, actorName, actorId, targetId, reason = null }) {
+    const successLine = reason
+      ? `<@${actorId}> manually awarded a ${amount} $COFFEE sip to <@${targetId}> for ${reason}`
+      : `<@${actorId}> manually awarded a ${amount} $COFFEE sip to <@${targetId}>`;
+
     return new EmbedBuilder()
       .setColor(result.success ? 0x4a7a44 : 0xb04a3a)
       .setTitle('DRIP Manual Award Receipt')
       .setDescription(
         result.success
-          ? `${actorName} manually awarded ${amount} $COFFEE to ${targetName}.`
+          ? successLine
           : `${actorName} attempted to manually award ${amount} $COFFEE to ${targetName}.`
       )
       .addFields(
