@@ -2,6 +2,7 @@ const { EmbedBuilder } = require('discord.js');
 const fetch = require('node-fetch');
 
 const DRIP_API_BASE = 'https://api.drip.re/api/v1';
+const MANUAL_REWARD_CONTACT_ID = '1369110267463471234';
 
 function floorSplit(total, weights) {
   const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
@@ -292,48 +293,43 @@ class DripService {
   }
 
   buildLogEmbed(payout) {
-    const failures = [
-      ...(payout.podiumResults || []).filter(result => result.success === false),
-      ...(payout.vespaResult && payout.vespaResult.success === false ? [payout.vespaResult] : [])
-    ];
+    const lines = [];
+    const failures = [];
 
-    const successCount = [
-      ...(payout.podiumResults || []).filter(result => result.success === true),
-      ...(payout.vespaResult && payout.vespaResult.success === true ? [payout.vespaResult] : [])
-    ].length;
+    for (const result of payout.podiumResults || []) {
+      const label = result.placement === 1
+        ? 'the top ME/CFS Warrior'
+        : result.placement === 2
+          ? 'the second ME/CFS Warrior'
+          : 'the third ME/CFS Warrior';
 
-    const failureText = failures.length > 0
-      ? failures
-        .map(result => `${result.player?.name || result.displayName || result.discordId}: ${result.reason || 'unknown error'}`)
-        .join('\n')
-        .slice(0, 1024)
-      : 'No payout errors.';
+      if (result.success) {
+        lines.push(`<@${result.player.id}> was rewarded ${result.tokens} for being ${label}`);
+      } else {
+        failures.push(result);
+        lines.push(`<@${result.player.id}> was NOT rewarded ${result.tokens} for being ${label}. <@${MANUAL_REWARD_CONTACT_ID}> will have to manually reward you.`);
+      }
+    }
 
-    return new EmbedBuilder()
+    if (payout.vespaResult?.player) {
+      if (payout.vespaResult.success) {
+        lines.push(`<@${payout.vespaResult.player.id}> was rewarded ${payout.vespaResult.tokens} for being the top <@&1428408018709512262> ME/CFS Warrior`);
+      } else {
+        failures.push(payout.vespaResult);
+        lines.push(`<@${payout.vespaResult.player.id}> was NOT rewarded ${payout.vespaResult.tokens} for being the top <@&1428408018709512262> ME/CFS Warrior. <@${MANUAL_REWARD_CONTACT_ID}> will have to manually reward you.`);
+      }
+    }
+
+    const embed = new EmbedBuilder()
       .setColor(failures.length > 0 ? 0xb04a3a : 0x4a7a44)
       .setTitle('DRIP Payout Receipt')
       .setDescription(
         payout.enabled
-          ? `Processed a $COFFEE payout for ${Math.floor(payout.totalPrizePool / 15)} real player joins.`
+          ? (lines.join('\n').slice(0, 4096) || 'No eligible rewards this fight.')
           : 'DRIP payout was skipped because DRIP is not configured.'
-      )
-      .addFields(
-        {
-          name: 'Summary',
-          value: `Successful awards: ${successCount}\nFailed awards: ${failures.length}`,
-          inline: true
-        },
-        {
-          name: 'Prize Pool',
-          value: `Total: ${payout.totalPrizePool} $COFFEE\nPodium: ${payout.podiumPool} $COFFEE\nVespa: ${payout.vespaPool} $COFFEE`,
-          inline: true
-        },
-        {
-          name: 'Errors',
-          value: failureText,
-          inline: false
-        }
       );
+
+    return embed;
   }
 
   async testConnection() {
