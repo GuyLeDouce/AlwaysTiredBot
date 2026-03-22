@@ -441,15 +441,17 @@ class DripService {
       ? `<@${actorId}> manually awarded a ${amount} $COFFEE sip to <@${targetId}> for ${reason}`
       : `<@${actorId}> manually awarded a ${amount} $COFFEE sip to <@${targetId}>`;
 
-    return new EmbedBuilder()
+    const embed = new EmbedBuilder()
       .setColor(result.success ? 0x4a7a44 : 0xb04a3a)
       .setTitle('DRIP Manual Award Receipt')
       .setDescription(
         result.success
           ? successLine
           : `${actorName} attempted to manually award ${amount} $COFFEE to ${targetName}.`
-      )
-      .addFields(
+      );
+
+    if (!result.success) {
+      embed.addFields(
         {
           name: 'Actor',
           value: `${actorName} (${actorId})`,
@@ -462,10 +464,13 @@ class DripService {
         },
         {
           name: 'Result',
-          value: result.success ? 'Points awarded successfully.' : (result.reason || 'Unknown error').slice(0, 1024),
+          value: (result.reason || 'Unknown error').slice(0, 1024),
           inline: false
         }
       );
+    }
+
+    return embed;
   }
 }
 
