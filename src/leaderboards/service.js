@@ -240,10 +240,10 @@ class LeaderboardService {
   async getVespaLeaderboard(guildId, limit = 10) {
     const res = await this.pool.query(
       `
-        SELECT user_id, display_name, total_vespa_kills, total_wins, total_kills, has_vespa_unlocked
+        SELECT user_id, display_name, total_vespa_kills, total_wins, total_top3, total_kills, total_games_played, has_vespa_unlocked
         FROM ${PLAYER_STATS_TABLE}
         WHERE guild_id = $1 AND (total_vespa_kills >= 1 OR has_vespa_unlocked = TRUE)
-        ORDER BY total_vespa_kills DESC, total_wins DESC, total_kills DESC, updated_at ASC
+        ORDER BY total_wins DESC, total_top3 DESC, total_kills DESC, total_games_played DESC, updated_at ASC
         LIMIT $2
       `,
       [guildId, limit]
@@ -288,14 +288,14 @@ class LeaderboardService {
 
   buildVespaLeaderboardEmbed(rows) {
     const description = rows.length > 0
-      ? rows.map((row, index) => `**#${index + 1} ${row.display_name}** - ${row.total_vespa_kills} vespa kills | ${row.total_wins} wins | ${row.total_kills} kills`).join('\n')
+      ? rows.map((row, index) => `**#${index + 1} ${row.display_name}** - ${row.total_wins} wins | ${row.total_top3} top 3 | ${row.total_kills} kills | ${row.total_vespa_kills} vespa kills`).join('\n')
       : 'No one has unlocked the Vespa tier yet.';
 
     return new EmbedBuilder()
       .setColor(0x8f6a3a)
       .setTitle('Vespa Leaderboard')
       .setDescription(description)
-      .setFooter({ text: 'Unlocked at 1 lifetime Vespa kill' });
+      .setFooter({ text: 'Only unlocked Vespa Killer players are shown' });
   }
 
   buildVespaUnlockEmbed(playerName) {
