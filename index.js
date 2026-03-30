@@ -30,6 +30,9 @@ const DRIP_REALM_ID = process.env.DRIP_REALM_ID;
 const DRIP_CLIENT_ID = process.env.DRIP_CLIENT_ID;
 const DRIP_CURRENCY_ID = process.env.DRIP_CURRENCY_ID;
 const DRIP_LOG_CHANNEL_ID = process.env.DRIP_LOG_CHANNEL_ID;
+const DRIP_INITIATOR_ID = process.env.DRIP_INITIATOR_ID;
+const DRIP_SENDER_ID = process.env.DRIP_SENDER_ID;
+const DRIP_TRANSFER_SENDER_ID = process.env.DRIP_TRANSFER_SENDER_ID;
 const ENABLE_MESSAGE_CONTENT_INTENT = process.env.ENABLE_MESSAGE_CONTENT_INTENT === 'true';
 const FIGHT_ALLOWED_USER_IDS = new Set(['826581856400179210', '923567278610595871']);
 const FIGHT_ALLOWED_ROLE_ID = '1404835877963825204';
@@ -284,7 +287,10 @@ const dripService = new DripService({
   realmId: DRIP_REALM_ID,
   clientId: DRIP_CLIENT_ID,
   currencyId: DRIP_CURRENCY_ID,
-  logChannelId: DRIP_LOG_CHANNEL_ID
+  logChannelId: DRIP_LOG_CHANNEL_ID,
+  initiatorId: DRIP_INITIATOR_ID,
+  senderId: DRIP_SENDER_ID,
+  transferSenderId: DRIP_TRANSFER_SENDER_ID
 });
 const fightService = new FightService(client, leaderboardService, dripService);
 
@@ -574,12 +580,38 @@ const commandsBuilders = [
         .setName('amount')
         .setDescription('Amount of $COFFEE to gift.')
         .setMinValue(1)
+        .setMaxValue(100000)
         .setRequired(true)
     )
     .addStringOption(option =>
       option
         .setName('reason')
         .setDescription('Optional reason for the sip.')
+        .setMaxLength(200)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('paytest')
+    .setDescription('Test the DRIP payout flow for a user.')
+    .addUserOption(option =>
+      option
+        .setName('user')
+        .setDescription('The Discord user to receive the test payout.')
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName('amount')
+        .setDescription('Amount of $COFFEE to send. Defaults to 1.')
+        .setMinValue(1)
+        .setMaxValue(100000)
+        .setRequired(false)
+    )
+    .addStringOption(option =>
+      option
+        .setName('reason')
+        .setDescription('Optional reason for the test payout.')
         .setMaxLength(200)
         .setRequired(false)
     )
@@ -1093,6 +1125,62 @@ client.on('interactionCreate', async (interaction) => {
       }
     } catch (err) {
       console.error('Error running /sip:', err);
+      await interaction.editReply('⚠️ Error sending $COFFEE. Please try again later.');
+    }
+  }
+
+  if (commandName === 'paytest') {
+    if (!canResetVespaSystem(interaction)) {
+      await interaction.reply({
+        content: '❌ You do not have permission to use `/paytest`.',
+        flags: MessageFlags.Ephemeral
+      });
+      return;
+    }
+
+    const targetUser = interaction.options.getUser('user', true);
+    const amount = interaction.options.getInteger('amount') ?? 1;
+    const reason = interaction.options.getString('reason');
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    try {
+      const result = await dripService.manualAwardByDiscordId(targetUser.id, amount);
+      const targetName = targetUser.globalName || targetUser.username;
+      const actorName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+
+      await interaction.editReply({
+        embeds: [
+          dripService.buildManualAwardEmbed({
+            targetName,
+            amount,
+            result,
+            actorName,
+            reason
+          })
+        ]
+      });
+
+      if (dripService.logChannelId) {
+        const logChannel = await client.channels.fetch(dripService.logChannelId).catch(() => null);
+        if (logChannel && logChannel.isTextBased()) {
+          await logChannel.send({
+            embeds: [
+              dripService.buildManualAwardLogEmbed({
+                targetName,
+                amount,
+                result,
+                actorName,
+                actorId: interaction.user.id,
+                targetId: targetUser.id,
+                reason
+              })
+            ]
+          }).catch(() => null);
+        }
+      }
+    } catch (err) {
+      console.error('Error running /paytest:', err);
       await interaction.editReply('⚠️ Error sending $COFFEE. Please try again later.');
     }
   }

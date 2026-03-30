@@ -23,12 +23,26 @@ function floorSplit(total, weights) {
 }
 
 class DripService {
-  constructor({ apiToken, realmId, clientId, currencyId, logChannelId = null }) {
+  constructor({
+    apiToken,
+    realmId,
+    clientId,
+    currencyId,
+    logChannelId = null,
+    initiatorId = null,
+    senderId = null,
+    transferSenderId = null,
+    defaultSenderMemberId = null
+  }) {
     this.apiToken = apiToken;
     this.realmId = realmId;
     this.clientId = clientId;
     this.currencyId = currencyId;
     this.logChannelId = logChannelId;
+    this.initiatorId = initiatorId;
+    this.senderId = senderId;
+    this.transferSenderId = transferSenderId;
+    this.defaultSenderMemberId = defaultSenderMemberId;
   }
 
   isConfigured() {
@@ -42,29 +56,104 @@ class DripService {
     };
   }
 
-  async fetchJsonWithFallback(candidates, options) {
+  log(event, details = {}) {
+    console.log(`[DRIP] ${event}`, details);
+  }
+
+  normalizeId(value) {
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return null;
+    }
+
+    const normalized = String(value).trim();
+    if (
+      !normalized
+      || normalized === '[object Object]'
+      || normalized === 'null'
+      || normalized === 'undefined'
+    ) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  collectCandidateIds(values) {
+    const seen = new Set();
+    const candidates = [];
+
+    for (const value of values) {
+      const normalized = this.normalizeId(value);
+      if (!normalized || seen.has(normalized)) {
+        continue;
+      }
+
+      seen.add(normalized);
+      candidates.push(normalized);
+    }
+
+    return candidates;
+  }
+
+  async requestJson(url, options = {}) {
+    const response = await fetch(url, options);
+    const rawBody = await response.text().catch(() => '');
+    let data = {};
+
+    if (rawBody) {
+      try {
+        data = JSON.parse(rawBody);
+      } catch {
+        data = { rawBody };
+      }
+    }
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      url,
+      data,
+      rawBody
+    };
+  }
+
+  async fetchJsonWithFallback(candidates, options, { logLabel = 'request', suppress404 = true } = {}) {
     let lastError = null;
 
     for (const url of candidates) {
+      let result;
+
       try {
-        const response = await fetch(url, options);
-        const data = await response.json().catch(() => ({}));
-
-        if (response.ok) {
-          return { response, data, url };
-        }
-
-        lastError = new Error(data?.message || `HTTP ${response.status}`);
-        lastError.status = response.status;
-        lastError.data = data;
-
-        // Keep trying only when the route itself looks wrong.
-        if (response.status !== 404) {
-          throw lastError;
-        }
+        result = await this.requestJson(url, options);
       } catch (error) {
         lastError = error;
+        this.log(`${logLabel} network failure`, {
+          url,
+          message: error?.message || String(error)
+        });
+        continue;
       }
+
+      if (result.ok) {
+        return result;
+      }
+
+      lastError = new Error(result.data?.message || result.rawBody || `HTTP ${result.status}`);
+      lastError.status = result.status;
+      lastError.data = result.data;
+      lastError.url = url;
+
+      if (result.status === 404 && suppress404) {
+        continue;
+      }
+
+      this.log(`${logLabel} failure`, {
+        url,
+        status: result.status,
+        body: result.rawBody || result.data
+      });
+
+      throw lastError;
     }
 
     throw lastError || new Error('DRIP request failed');
@@ -72,85 +161,355 @@ class DripService {
 
   async searchMemberByDiscordId(discordId) {
     const query = `type=discord-id&values=${encodeURIComponent(discordId)}`;
-    const { data } = await this.fetchJsonWithFallback(
-      [
-        `${DRIP_API_BASE}/realm/${this.realmId}/members/search?${query}`,
-        `${DRIP_API_BASE}/realms/${this.realmId}/members/search?${query}`
-      ],
-      { headers: this.getHeaders() }
+    const routes = [
+      `${DRIP_API_BASE}/realms/${this.realmId}/members/search?${query}`,
+      `${DRIP_API_BASE}/realm/${this.realmId}/members/search?${query}`
+    ];
+
+    this.log('recipient search start', {
+      discordId,
+      routes
+    });
+
+    const { data, url } = await this.fetchJsonWithFallback(
+      routes,
+      { headers: this.getHeaders() },
+      { logLabel: 'member search', suppress404: true }
     );
 
-    return data?.data?.[0] || null;
+    const member = data?.data?.[0] || null;
+    this.log('recipient search result', {
+      discordId,
+      route: url,
+      recipientCandidates: this.collectCandidateIds([member?.id]),
+      resolvedRecipientMemberId: member?.id || null
+    });
+
+    return member;
+  }
+
+  resolveConfiguredSenderMemberId() {
+    const senderCandidates = this.collectCandidateIds([
+      this.senderId,
+      this.transferSenderId,
+      this.defaultSenderMemberId
+    ]);
+
+    this.log('sender resolution', {
+      senderCandidates,
+      configuredSenderId: this.normalizeId(this.senderId),
+      configuredTransferSenderId: this.normalizeId(this.transferSenderId),
+      defaultSenderMemberId: this.normalizeId(this.defaultSenderMemberId),
+      initiatorId: this.normalizeId(this.initiatorId),
+      clientId: this.normalizeId(this.clientId)
+    });
+
+    if (senderCandidates.length === 0) {
+      throw new Error('No DRIP transfer sender member ID is configured. Set DRIP_SENDER_ID or DRIP_TRANSFER_SENDER_ID.');
+    }
+
+    return {
+      senderCandidates,
+      senderMemberId: senderCandidates[0]
+    };
+  }
+
+  async resolveRecipientMember({ discordId, recipientMemberIdOverride = null }) {
+    const recipientCandidates = this.collectCandidateIds([recipientMemberIdOverride]);
+
+    if (recipientCandidates.length > 0) {
+      this.log('recipient resolution', {
+        discordId,
+        recipientCandidates,
+        source: 'override'
+      });
+
+      return {
+        recipientCandidates,
+        recipientMemberId: recipientCandidates[0],
+        displayName: null
+      };
+    }
+
+    const member = await this.searchMemberByDiscordId(discordId);
+    const resolvedCandidates = this.collectCandidateIds([member?.id]);
+
+    this.log('recipient resolution', {
+      discordId,
+      recipientCandidates: resolvedCandidates,
+      source: 'discord-id-search'
+    });
+
+    if (!member || resolvedCandidates.length === 0) {
+      return {
+        recipientCandidates: [],
+        recipientMemberId: null,
+        displayName: null
+      };
+    }
+
+    return {
+      recipientCandidates: resolvedCandidates,
+      recipientMemberId: resolvedCandidates[0],
+      displayName: member.displayName || member.username || discordId
+    };
+  }
+
+  buildTransferPayloadVariants(tokens, recipientMemberId) {
+    const variants = [];
+
+    variants.push({
+      label: this.currencyId ? 'amount+currencyId' : 'amount',
+      payload: {
+        amount: tokens,
+        recipientId: recipientMemberId,
+        ...(this.currencyId ? { currencyId: this.currencyId } : {})
+      }
+    });
+
+    variants.push({
+      label: this.currencyId ? 'tokens+realmPointId' : 'tokens',
+      payload: {
+        tokens,
+        recipientId: recipientMemberId,
+        ...(this.currencyId ? { realmPointId: this.currencyId } : {})
+      }
+    });
+
+    return variants;
+  }
+
+  async transferTokensBetweenMembers({ senderMemberId, recipientMemberId, tokens, context = 'reward' }) {
+    const url = `${DRIP_API_BASE}/realms/${this.realmId}/members/${senderMemberId}/transfer`;
+    const attempts = this.buildTransferPayloadVariants(tokens, recipientMemberId);
+    let lastError = null;
+
+    for (const attempt of attempts) {
+      this.log('transfer request', {
+        context,
+        url,
+        senderMemberId,
+        recipientMemberId,
+        payload: attempt.payload,
+        payloadVariant: attempt.label
+      });
+
+      let result;
+
+      try {
+        result = await this.requestJson(url, {
+          method: 'PATCH',
+          headers: this.getHeaders(),
+          body: JSON.stringify(attempt.payload)
+        });
+      } catch (error) {
+        lastError = error;
+        this.log('transfer failure', {
+          context,
+          url,
+          senderMemberId,
+          recipientMemberId,
+          payloadVariant: attempt.label,
+          message: error?.message || String(error)
+        });
+        continue;
+      }
+
+      if (result.ok) {
+        return result.data;
+      }
+
+      lastError = new Error(result.data?.message || result.rawBody || `HTTP ${result.status}`);
+      lastError.status = result.status;
+      lastError.data = result.data;
+      lastError.url = url;
+
+      this.log('transfer failure', {
+        context,
+        url,
+        senderMemberId,
+        recipientMemberId,
+        payloadVariant: attempt.label,
+        status: result.status,
+        body: result.rawBody || result.data
+      });
+    }
+
+    throw lastError || new Error('DRIP member transfer failed');
   }
 
   resolveCoffeeCurrencyId() {
     if (!this.currencyId) {
-      throw new Error('DRIP_CURRENCY_ID is missing. It is required as the $COFFEE currency identifier.');
+      throw new Error('DRIP_CURRENCY_ID is missing. It is required for project-level fallback awards.');
     }
 
     return this.currencyId;
   }
 
-  async awardTokensToMemberId(memberId, tokens) {
+  async awardTokensToMemberId(memberId, tokens, { context = 'reward' } = {}) {
     const currencyId = this.resolveCoffeeCurrencyId();
 
     try {
+      const balanceUrl = `${DRIP_API_BASE}/realms/${this.realmId}/members/${memberId}/balance`;
+      const balancePayload = {
+        amount: tokens,
+        currencyId
+      };
+
+      this.log('project fallback request', {
+        context,
+        url: balanceUrl,
+        payload: balancePayload
+      });
+
       const { data } = await this.fetchJsonWithFallback(
-        [
-          `${DRIP_API_BASE}/realms/${this.realmId}/members/${memberId}/balance`
-        ],
+        [balanceUrl],
         {
           method: 'PATCH',
           headers: this.getHeaders(),
-          body: JSON.stringify({
-            amount: tokens,
-            currencyId
-          })
-        }
+          body: JSON.stringify(balancePayload)
+        },
+        { logLabel: 'project fallback balance', suppress404: false }
       );
 
       return data;
     } catch (balanceError) {
+      const pointBalanceUrls = [
+        `${DRIP_API_BASE}/realms/${this.realmId}/members/${memberId}/point-balance`,
+        `${DRIP_API_BASE}/realm/${this.realmId}/members/${memberId}/point-balance`
+      ];
+      const pointBalancePayload = {
+        tokens,
+        realmPointId: currencyId
+      };
+
+      this.log('project fallback request', {
+        context,
+        urls: pointBalanceUrls,
+        payload: pointBalancePayload
+      });
+
       const { data } = await this.fetchJsonWithFallback(
-        [
-          `${DRIP_API_BASE}/realm/${this.realmId}/members/${memberId}/point-balance`,
-          `${DRIP_API_BASE}/realms/${this.realmId}/members/${memberId}/point-balance`
-        ],
+        pointBalanceUrls,
         {
           method: 'PATCH',
           headers: this.getHeaders(),
-          body: JSON.stringify({
-            tokens,
-            realmPointId: currencyId
-          })
-        }
+          body: JSON.stringify(pointBalancePayload)
+        },
+        { logLabel: 'project fallback point-balance', suppress404: true }
       );
 
       return data;
     }
   }
 
-  async awardTokensByDiscordId(discordId, tokens) {
-    const member = await this.searchMemberByDiscordId(discordId);
-    if (!member) {
+  async payoutByDiscordId(discordId, tokens, { recipientMemberIdOverride = null, context = 'reward' } = {}) {
+    this.log('reward start', {
+      context,
+      discordId,
+      recipientMemberIdOverride: this.normalizeId(recipientMemberIdOverride),
+      tokens
+    });
+
+    const recipient = await this.resolveRecipientMember({ discordId, recipientMemberIdOverride });
+    const { recipientMemberId, recipientCandidates, displayName } = recipient;
+
+    if (!recipientMemberId) {
       return {
         success: false,
         reason: 'member_not_found',
         discordId,
         displayName: null,
-        tokens
+        tokens,
+        recipientCandidates,
+        senderCandidates: []
       };
     }
 
-    await this.awardTokensToMemberId(member.id, tokens);
-    return {
-      success: true,
-      reason: null,
-      discordId,
-      dripMemberId: member.id,
-      displayName: member.displayName || member.username || discordId,
-      tokens
-    };
+    let sender;
+    try {
+      sender = this.resolveConfiguredSenderMemberId();
+    } catch (error) {
+      return {
+        success: false,
+        reason: error?.message || String(error),
+        discordId,
+        dripMemberId: recipientMemberId,
+        displayName,
+        tokens,
+        recipientCandidates,
+        senderCandidates: []
+      };
+    }
+
+    try {
+      await this.transferTokensBetweenMembers({
+        senderMemberId: sender.senderMemberId,
+        recipientMemberId,
+        tokens,
+        context
+      });
+
+      return {
+        success: true,
+        reason: null,
+        method: 'member_transfer',
+        discordId,
+        dripMemberId: recipientMemberId,
+        senderDripMemberId: sender.senderMemberId,
+        displayName,
+        tokens,
+        recipientCandidates,
+        senderCandidates: sender.senderCandidates
+      };
+    } catch (transferError) {
+      this.log('member transfer failed, using project fallback', {
+        context,
+        discordId,
+        senderMemberId: sender.senderMemberId,
+        recipientMemberId,
+        status: transferError?.status || null,
+        body: transferError?.data || transferError?.message || String(transferError)
+      });
+
+      try {
+        await this.awardTokensToMemberId(recipientMemberId, tokens, {
+          context: `${context}:project-fallback`
+        });
+
+        return {
+          success: true,
+          reason: null,
+          method: 'project_fallback',
+          fallbackUsed: true,
+          discordId,
+          dripMemberId: recipientMemberId,
+          senderDripMemberId: sender.senderMemberId,
+          displayName,
+          tokens,
+          recipientCandidates,
+          senderCandidates: sender.senderCandidates
+        };
+      } catch (fallbackError) {
+        return {
+          success: false,
+          reason: fallbackError?.message || String(fallbackError),
+          method: 'project_fallback_failed',
+          transferFailure: transferError?.message || String(transferError),
+          discordId,
+          dripMemberId: recipientMemberId,
+          senderDripMemberId: sender.senderMemberId,
+          displayName,
+          tokens,
+          recipientCandidates,
+          senderCandidates: sender.senderCandidates
+        };
+      }
+    }
+  }
+
+  async awardTokensByDiscordId(discordId, tokens) {
+    return this.payoutByDiscordId(discordId, tokens, { context: 'manual-award' });
   }
 
   async manualAwardByDiscordId(discordId, tokens) {
@@ -164,7 +523,7 @@ class DripService {
       };
     }
 
-    return this.awardTokensByDiscordId(discordId, tokens).catch(error => ({
+    return this.payoutByDiscordId(discordId, tokens, { context: 'manual-award' }).catch(error => ({
       success: false,
       reason: error?.message || String(error),
       discordId,
@@ -215,9 +574,11 @@ class DripService {
         continue;
       }
 
-      const result = await this.awardTokensByDiscordId(award.player.id, award.tokens).catch(error => ({
+      const result = await this.payoutByDiscordId(award.player.id, award.tokens, {
+        context: `fight-payout:${award.placement}`
+      }).catch(error => ({
         success: false,
-        reason: error.message,
+        reason: error?.message || String(error),
         discordId: award.player.id,
         displayName: award.player.name,
         tokens: award.tokens
@@ -233,7 +594,9 @@ class DripService {
 
     let vespaResult = null;
     if (plan.vespaAward && !plan.vespaAward.player.isBot && plan.vespaAward.tokens > 0) {
-      vespaResult = await this.awardTokensByDiscordId(plan.vespaAward.player.id, plan.vespaAward.tokens)
+      vespaResult = await this.payoutByDiscordId(plan.vespaAward.player.id, plan.vespaAward.tokens, {
+        context: 'fight-payout:vespa'
+      })
         .then(result => ({
           player: plan.vespaAward.player,
           tokens: plan.vespaAward.tokens,
@@ -243,7 +606,7 @@ class DripService {
           player: plan.vespaAward.player,
           tokens: plan.vespaAward.tokens,
           success: false,
-          reason: error.message,
+          reason: error?.message || String(error),
           discordId: plan.vespaAward.player.id,
           displayName: plan.vespaAward.player.name
         }));
@@ -341,14 +704,6 @@ class DripService {
       };
     }
 
-    if (!this.currencyId) {
-      return {
-        ok: false,
-        reason: 'missing_currency',
-        message: 'DRIP_CURRENCY_ID is missing.'
-      };
-    }
-
     try {
       const response = await fetch(
         `${DRIP_API_BASE}/realms/${this.realmId}`,
@@ -400,8 +755,18 @@ class DripService {
           inline: true
         },
         {
+          name: 'Sender Member ID',
+          value: this.senderId || this.transferSenderId || this.defaultSenderMemberId || 'Not configured',
+          inline: true
+        },
+        {
           name: 'Currency ID',
           value: this.currencyId || 'Not configured',
+          inline: true
+        },
+        {
+          name: 'Initiator ID',
+          value: this.initiatorId || 'Not configured',
           inline: true
         },
         {
@@ -427,7 +792,9 @@ class DripService {
       )
       .addFields({
         name: 'Result',
-        value: result.success ? 'Points awarded successfully.' : (result.reason || 'Unknown error').slice(0, 1024),
+        value: result.success
+          ? `Transfer completed via ${result.method === 'project_fallback' ? 'project fallback' : 'member transfer'}.`
+          : (result.reason || 'Unknown error').slice(0, 1024),
         inline: false
       });
   }
