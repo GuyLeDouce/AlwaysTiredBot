@@ -150,17 +150,17 @@ class FightService {
     }
 
     const type = interaction.options.getString('type', true);
-    const timeSeconds = interaction.options.getInteger('time');
+    const timeMinutes = interaction.options.getInteger('time');
 
-    if (type === 'normal' && (!timeSeconds || timeSeconds < 15)) {
+    if (type === 'normal' && (!timeMinutes || timeMinutes < 2 || timeMinutes > 10080)) {
       await interaction.reply({
-        content: 'Normal fights require a countdown of at least 15 seconds.',
+        content: 'Normal fights require a countdown between 2 and 10080 minutes.',
         ephemeral: true
       });
       return;
     }
 
-    const startAt = type === 'normal' ? Date.now() + (timeSeconds * 1000) : null;
+    const startAt = type === 'normal' ? Date.now() + (timeMinutes * 60 * 1000) : null;
     const state = {
       guildId: interaction.guildId,
       channelId: interaction.channelId,

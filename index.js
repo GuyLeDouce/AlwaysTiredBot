@@ -524,9 +524,9 @@ const commandsBuilders = [
     .addIntegerOption(option =>
       option
         .setName('time')
-        .setDescription('Countdown in seconds for normal fights. Ignored for staff fights.')
-        .setMinValue(15)
-        .setMaxValue(3600)
+        .setDescription('Countdown in minutes for normal fights. Ignored for staff fights.')
+        .setMinValue(2)
+        .setMaxValue(10080)
         .setRequired(false)
     ),
 
