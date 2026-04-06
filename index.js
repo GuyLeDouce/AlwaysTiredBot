@@ -1053,13 +1053,6 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
       console.error('Error fetching global leaderboard:', err);
       await sendSafeInteractionError(interaction, 'Error loading the leaderboard. Please try again later.');
-      return;
-      if (!interaction.replied) {
-        await interaction.reply({
-          content: '⚠️ Error loading the leaderboard. Please try again later.',
-          flags: MessageFlags.Ephemeral
-        });
-      }
     }
   }
 
@@ -1072,13 +1065,6 @@ client.on('interactionCreate', async (interaction) => {
     } catch (err) {
       console.error('Error fetching Vespa leaderboard:', err);
       await sendSafeInteractionError(interaction, 'Error loading the Vespa leaderboard. Please try again later.');
-      return;
-      if (!interaction.replied) {
-        await interaction.reply({
-          content: '⚠️ Error loading the Vespa leaderboard. Please try again later.',
-          flags: MessageFlags.Ephemeral
-        });
-      }
     }
   }
 
