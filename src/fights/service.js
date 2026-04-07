@@ -1,4 +1,5 @@
 const { EmbedBuilder, PermissionsBitField } = require('discord.js');
+const { randomInt: cryptoRandomInt } = require('node:crypto');
 const {
   singleRevivePhrases,
   killPhrases,
@@ -22,8 +23,15 @@ const ALWAYS_TIRED_SUPPLY = 7777;
 const BOT_FILL_TRIGGER_COUNT = 10;
 const BOT_FILL_COUNT = 15;
 const MAX_VESPA_KILLS_PER_GAME = 2;
-const VESPA_KILL_PHRASE_CHANCE = 0.12;
-const MINI_VESPA_UNLOCK_CHANCE = 0.18;
+const BASE_VESPA_KILL_PHRASE_CHANCE = 0.2;
+const BASE_MINI_VESPA_UNLOCK_CHANCE = 0.32;
+const LARGE_LOBBY_VESPA_GUARANTEE_MIN_PLAYERS = 30;
+const LARGE_LOBBY_VESPA_GUARANTEE_REMAINING_PLAYERS = 3;
+const LARGE_LOBBY_VESPA_CHANCE_STEP_START = 20;
+const LARGE_LOBBY_VESPA_CHANCE_STEP_SIZE = 10;
+const LARGE_LOBBY_VESPA_CHANCE_STEP_BONUS = 0.08;
+const MAX_VESPA_KILL_PHRASE_CHANCE = 0.45;
+const MAX_MINI_VESPA_UNLOCK_CHANCE = 0.65;
 const BOT_NAME_POOL = [
   'Battery Low Barry',
   'Brain Fog Brenda',
@@ -62,17 +70,21 @@ function sleep(ms) {
 }
 
 function randomInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+  return cryptoRandomInt(min, max + 1);
+}
+
+function randomFloat() {
+  return cryptoRandomInt(0, 1_000_000) / 1_000_000;
 }
 
 function pickRandom(list) {
-  return list[Math.floor(Math.random() * list.length)];
+  return list[randomInt(0, list.length - 1)];
 }
 
 function shuffle(list) {
   const clone = [...list];
   for (let i = clone.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = randomInt(0, i);
     [clone[i], clone[j]] = [clone[j], clone[i]];
   }
   return clone;
@@ -99,6 +111,10 @@ function render(template, replacements) {
 function buildRandomSleepyImageUrl() {
   const tokenId = randomInt(1, ALWAYS_TIRED_SUPPLY);
   return `${ALWAYS_TIRED_IMAGE_BASE}/${tokenId}.jpg`;
+}
+
+function clamp(number, min, max) {
+  return Math.min(max, Math.max(min, number));
 }
 
 function getDisplayTextFromInteraction(interaction) {
@@ -598,6 +614,11 @@ class FightService {
   }
 
   generateEliminationLine(state) {
+    const guaranteedVespaLine = this.handleGuaranteedVespaKillEvent(state);
+    if (guaranteedVespaLine) {
+      return guaranteedVespaLine;
+    }
+
     const candidates = [];
 
     if (state.alivePlayers.length >= 2) {
@@ -616,7 +637,7 @@ class FightService {
     }
 
     while (candidates.length > 0) {
-      const pick = candidates.splice(Math.floor(Math.random() * candidates.length), 1)[0];
+      const pick = candidates.splice(randomInt(0, candidates.length - 1), 1)[0];
       const line = this.executeEvent(state, pick);
       if (line) {
         return line;
@@ -833,6 +854,91 @@ class FightService {
     state.persistentVespaProgress.set(killerId, currentProgress);
   }
 
+  getVespaChanceBonus(state) {
+    const extraPlayers = Math.max(0, state.humanEntrantCount - LARGE_LOBBY_VESPA_CHANCE_STEP_START);
+    const bonusSteps = Math.floor(extraPlayers / LARGE_LOBBY_VESPA_CHANCE_STEP_SIZE);
+    return bonusSteps * LARGE_LOBBY_VESPA_CHANCE_STEP_BONUS;
+  }
+
+  getVespaKillPhraseChance(state) {
+    return clamp(
+      BASE_VESPA_KILL_PHRASE_CHANCE + this.getVespaChanceBonus(state),
+      BASE_VESPA_KILL_PHRASE_CHANCE,
+      MAX_VESPA_KILL_PHRASE_CHANCE
+    );
+  }
+
+  getMiniVespaUnlockChance(state) {
+    return clamp(
+      BASE_MINI_VESPA_UNLOCK_CHANCE + this.getVespaChanceBonus(state),
+      BASE_MINI_VESPA_UNLOCK_CHANCE,
+      MAX_MINI_VESPA_UNLOCK_CHANCE
+    );
+  }
+
+  shouldGuaranteeVespaKill(state) {
+    if (
+      state.totalVespaKills > 0
+      || state.humanEntrantCount < LARGE_LOBBY_VESPA_GUARANTEE_MIN_PLAYERS
+      || state.alivePlayers.length > LARGE_LOBBY_VESPA_GUARANTEE_REMAINING_PLAYERS
+    ) {
+      return false;
+    }
+
+    return state.alivePlayers.some(player => {
+      if (player.isBot) {
+        return false;
+      }
+
+      const stats = state.playerStats.get(player.id);
+      return Boolean(stats && !stats.hasVespaUnlocked);
+    });
+  }
+
+  handleGuaranteedVespaKillEvent(state) {
+    if (!this.shouldGuaranteeVespaKill(state) || state.alivePlayers.length < 2) {
+      return null;
+    }
+
+    const eligibleKillers = state.alivePlayers.filter(player => {
+      if (player.isBot) {
+        return false;
+      }
+
+      const stats = state.playerStats.get(player.id);
+      return Boolean(stats && !stats.hasVespaUnlocked);
+    });
+
+    const killerPool = eligibleKillers.length > 0
+      ? eligibleKillers
+      : state.alivePlayers.filter(player => !player.isBot);
+
+    if (killerPool.length === 0) {
+      return null;
+    }
+
+    const killer = pickRandom(killerPool);
+    const targets = state.alivePlayers.filter(player => player.id !== killer.id);
+    if (targets.length === 0) {
+      return null;
+    }
+
+    const target = pickRandom(targets);
+    const vespaPhrases = killPhrases.filter(phrase => /Vespa/i.test(phrase));
+    if (vespaPhrases.length === 0) {
+      return null;
+    }
+
+    const phrase = render(pickRandom(vespaPhrases), {
+      p1: killer.mention,
+      p2: formatEliminatedMention(target)
+    });
+
+    this.eliminatePlayer(state, target.id, { killerId: killer.id, isVespa: true });
+    this.incrementKiller(state, killer.id, true);
+    return formatEliminationLine(phrase);
+  }
+
   getAvailableKillPhrases(state) {
     const vespaPhrases = killPhrases.filter(phrase => /Vespa/i.test(phrase));
     const nonVespaPhrases = killPhrases.filter(phrase => !/Vespa/i.test(phrase));
@@ -841,7 +947,7 @@ class FightService {
       return nonVespaPhrases;
     }
 
-    if (Math.random() > VESPA_KILL_PHRASE_CHANCE) {
+    if (randomFloat() > this.getVespaKillPhraseChance(state)) {
       return nonVespaPhrases;
     }
 
@@ -856,7 +962,7 @@ class FightService {
       return allAvailableItems.filter(item => !item.tags.includes('vespa'));
     }
 
-    if (Math.random() > MINI_VESPA_UNLOCK_CHANCE) {
+    if (randomFloat() > this.getMiniVespaUnlockChance(state)) {
       return allAvailableItems.filter(item => !item.tags.includes('vespa'));
     }
 
