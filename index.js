@@ -9,7 +9,6 @@ const {
   Client,
   EmbedBuilder,
   GatewayIntentBits,
-  ModalBuilder,
   Partials,
   PermissionsBitField,
   REST,
@@ -17,8 +16,7 @@ const {
   SlashCommandBuilder,
   Events,
   MessageFlags,
-  TextInputBuilder,
-  TextInputStyle
+  UserSelectMenuBuilder
 } = require('discord.js');
 const fetch = require('node-fetch');
 const fs = require('fs');
@@ -474,12 +472,6 @@ function formatCoffeeAmount(tokens) {
   return `${tokens.toLocaleString('en-US')} $COFFEE`;
 }
 
-function parseDiscordUserId(value) {
-  const trimmed = String(value || '').trim();
-  const match = trimmed.match(/^(?:<@!?)?(\d{17,20})>?$/);
-  return match ? match[1] : null;
-}
-
 function parsePokerPayCustomId(customId) {
   const [scope, action, sessionId, place] = customId.split(':');
   if (scope !== 'pokerpay' || !action || !sessionId) {
@@ -628,20 +620,14 @@ async function startPokerPayPanel(interaction) {
   session.messageId = message.id;
 }
 
-function buildPokerPayModal(session, placement) {
-  const modal = new ModalBuilder()
-    .setCustomId(`pokerpay:modal:${session.id}:${placement.place}`)
-    .setTitle(`Set ${placement.label} Place`);
+function buildPokerPayUserSelectComponents(session, placement) {
+  const select = new UserSelectMenuBuilder()
+    .setCustomId(`pokerpay:user:${session.id}:${placement.place}`)
+    .setPlaceholder(`Search/select ${placement.label} place player`)
+    .setMinValues(1)
+    .setMaxValues(1);
 
-  const userInput = new TextInputBuilder()
-    .setCustomId('user')
-    .setLabel(`${placement.label} place user mention or ID`)
-    .setPlaceholder('@user or Discord user ID')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(userInput));
-  return modal;
+  return [new ActionRowBuilder().addComponents(select)];
 }
 
 function buildPokerPayAnnouncementEmbed(session, payoutResults) {
@@ -768,7 +754,11 @@ async function handlePokerPayButton(interaction) {
       return true;
     }
 
-    await interaction.showModal(buildPokerPayModal(session, placement));
+    await interaction.reply({
+      content: `Select the ${placement.label} place poker player.`,
+      components: buildPokerPayUserSelectComponents(session, placement),
+      flags: MessageFlags.Ephemeral
+    });
     return true;
   }
 
@@ -789,8 +779,8 @@ async function handlePokerPayButton(interaction) {
   return true;
 }
 
-async function handlePokerPayModalSubmit(interaction) {
-  if (!interaction.customId.startsWith('pokerpay:modal:')) {
+async function handlePokerPayUserSelect(interaction) {
+  if (!interaction.customId.startsWith('pokerpay:user:')) {
     return false;
   }
 
@@ -814,10 +804,10 @@ async function handlePokerPayModalSubmit(interaction) {
     return true;
   }
 
-  const userId = parseDiscordUserId(interaction.fields.getTextInputValue('user'));
+  const userId = interaction.values?.[0];
   if (!userId) {
     await interaction.reply({
-      content: '❌ Enter a valid Discord @user mention or user ID.',
+      content: '❌ Select a valid Discord user.',
       flags: MessageFlags.Ephemeral
     });
     return true;
@@ -835,12 +825,15 @@ async function handlePokerPayModalSubmit(interaction) {
     return true;
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.deferUpdate();
 
   session.winners[placement.place] = userId;
   await updatePokerPayPanel(session);
 
-  await interaction.editReply(`${placement.label} place set to <@${userId}>.`);
+  await interaction.editReply({
+    content: `${placement.label} place set to <@${userId}>.`,
+    components: []
+  });
 
   return true;
 }
@@ -1169,11 +1162,11 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  if (interaction.isModalSubmit()) {
+  if (interaction.isUserSelectMenu()) {
     try {
-      if (await handlePokerPayModalSubmit(interaction)) return;
+      if (await handlePokerPayUserSelect(interaction)) return;
     } catch (err) {
-      console.error('Error handling poker payout modal:', err);
+      console.error('Error handling poker payout user select:', err);
       await sendSafeInteractionError(interaction, '⚠️ Error updating the poker payout. Please try again later.');
       return;
     }
