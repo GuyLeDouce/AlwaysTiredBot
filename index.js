@@ -498,6 +498,18 @@ function pokerPaySessionIsComplete(session) {
   return POKER_PAY_PLACEMENTS.every(entry => session.winners[entry.place]);
 }
 
+async function sendPokerPayNotice(interaction, content) {
+  return interaction.followUp({
+    content,
+    flags: MessageFlags.Ephemeral
+  }).catch(error => {
+    if (error?.code !== 10062 && error?.code !== 40060) {
+      console.error('Failed to send poker payout notice:', error);
+    }
+    return null;
+  });
+}
+
 function restorePokerPaySessionFromMessage(sessionId, interaction, sourceMessage = interaction.message) {
   const message = sourceMessage;
   const embed = message?.embeds?.[0];
@@ -530,6 +542,7 @@ function restorePokerPaySessionFromMessage(sessionId, interaction, sourceMessage
     messageId: message.id,
     winners,
     payoutResults: {},
+    activePlace: null,
     processing: false,
     approved: false
   };
@@ -589,6 +602,7 @@ function buildPokerPayPanelEmbed(session) {
 function buildPokerPayPanelComponents(session) {
   const complete = pokerPaySessionIsComplete(session);
   const disabled = session.processing || session.approved;
+  const activePlacement = session.activePlace ? getPokerPayPlacement(session.activePlace) : null;
 
   const placementButtons = POKER_PAY_PLACEMENTS.map(entry =>
     new ButtonBuilder()
@@ -610,10 +624,22 @@ function buildPokerPayPanelComponents(session) {
     .setStyle(ButtonStyle.Secondary)
     .setDisabled(disabled || Object.keys(session.winners).length === 0);
 
-  return [
+  const rows = [
     new ActionRowBuilder().addComponents(...placementButtons),
     new ActionRowBuilder().addComponents(approveButton, resetButton)
   ];
+
+  if (activePlacement && !disabled) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new UserSelectMenuBuilder()
+        .setCustomId(`pokerpay:user:${session.id}:${activePlacement.place}:${session.messageId}`)
+        .setPlaceholder(`Select ${activePlacement.label} place player`)
+        .setMinValues(1)
+        .setMaxValues(1)
+    ));
+  }
+
+  return rows;
 }
 
 async function updatePokerPayPanel(session) {
@@ -658,6 +684,7 @@ async function startPokerPayPanel(interaction) {
     messageId: null,
     winners: {},
     payoutResults: {},
+    activePlace: null,
     processing: false,
     approved: false
   };
@@ -670,16 +697,6 @@ async function startPokerPayPanel(interaction) {
   });
 
   session.messageId = message.id;
-}
-
-function buildPokerPayUserSelectComponents(session, placement) {
-  const select = new UserSelectMenuBuilder()
-    .setCustomId(`pokerpay:user:${session.id}:${placement.place}:${session.messageId}`)
-    .setPlaceholder(`Search/select ${placement.label} place player`)
-    .setMinValues(1)
-    .setMaxValues(1);
-
-  return [new ActionRowBuilder().addComponents(select)];
 }
 
 function buildPokerPayAnnouncementEmbed(session, payoutResults) {
@@ -721,6 +738,7 @@ async function approvePokerPaySession(interaction, session) {
   }
 
   session.processing = true;
+  session.activePlace = null;
   await updatePokerPayPanel(session);
 
   const payoutResults = [];
@@ -773,63 +791,53 @@ async function handlePokerPayButton(interaction) {
     return false;
   }
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
   const parsed = parsePokerPayCustomId(interaction.customId);
+  const willApprove = parsed?.action === 'approve';
+  if (willApprove) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  } else {
+    await interaction.deferUpdate();
+  }
+  const sendButtonNotice = content => willApprove
+    ? interaction.editReply({ content, embeds: [], components: [] })
+    : sendPokerPayNotice(interaction, content);
+
   const session = parsed
     ? pokerPaySessions.get(parsed.sessionId) || restorePokerPaySessionFromMessage(parsed.sessionId, interaction)
     : null;
   if (!parsed || !session) {
-    await interaction.editReply({
-      content: '⚠️ This poker payout panel is no longer active. Start a new `/pokerpay`.',
-      embeds: [],
-      components: []
-    });
+    await sendButtonNotice('⚠️ This poker payout panel is no longer active. Start a new `/pokerpay`.');
     return true;
   }
 
   if (interaction.user.id !== session.initiatorId) {
-    await interaction.editReply({
-      content: `❌ Only <@${session.initiatorId}> can update or approve this poker payout.`,
-      embeds: [],
-      components: []
-    });
+    await sendButtonNotice(`❌ Only <@${session.initiatorId}> can update or approve this poker payout.`);
     return true;
   }
 
   if (session.processing || session.approved) {
-    await interaction.editReply({
-      content: '⚠️ This poker payout has already been submitted.',
-      embeds: [],
-      components: []
-    });
+    await sendButtonNotice('⚠️ This poker payout has already been submitted.');
     return true;
   }
 
   if (parsed.action === 'set' || parsed.action === 'add') {
     const placement = getPokerPayPlacement(parsed.place);
     if (!placement) {
-      await interaction.editReply({
-        content: '⚠️ Unknown poker placement.',
-        embeds: [],
-        components: []
-      });
+      await sendButtonNotice('⚠️ Unknown poker placement.');
       return true;
     }
 
-    await interaction.editReply({
-      content: `Select the ${placement.label} place poker player.`,
-      embeds: [],
-      components: buildPokerPayUserSelectComponents(session, placement)
-    });
+    session.activePlace = placement.place;
+    await updatePokerPayPanel(session);
     return true;
   }
 
   if (parsed.action === 'reset') {
     session.winners = {};
     session.payoutResults = {};
+    session.activePlace = null;
     await updatePokerPayPanel(session);
-    await interaction.editReply('Poker payout panel reset.');
+    await sendButtonNotice('Poker payout panel reset.');
     return true;
   }
 
@@ -838,11 +846,7 @@ async function handlePokerPayButton(interaction) {
     return true;
   }
 
-  await interaction.editReply({
-    content: '⚠️ Unknown poker payout action. Start a new `/pokerpay` if this panel is outdated.',
-    embeds: [],
-    components: []
-  });
+  await sendButtonNotice('⚠️ Unknown poker payout action. Start a new `/pokerpay` if this panel is outdated.');
   return true;
 }
 
@@ -867,27 +871,18 @@ async function handlePokerPayUserSelect(interaction) {
   const placement = parsed ? getPokerPayPlacement(parsed.place) : null;
 
   if (!parsed || !session || !placement) {
-    await interaction.editReply({
-      content: '⚠️ This poker payout panel is no longer active. Start a new `/pokerpay`.',
-      components: []
-    });
+    await sendPokerPayNotice(interaction, '⚠️ This poker payout panel is no longer active. Start a new `/pokerpay`.');
     return true;
   }
 
   if (interaction.user.id !== session.initiatorId) {
-    await interaction.editReply({
-      content: `❌ Only <@${session.initiatorId}> can update this poker payout.`,
-      components: []
-    });
+    await sendPokerPayNotice(interaction, `❌ Only <@${session.initiatorId}> can update this poker payout.`);
     return true;
   }
 
   const userId = interaction.values?.[0];
   if (!userId) {
-    await interaction.editReply({
-      content: '❌ Select a valid Discord user.',
-      components: []
-    });
+    await sendPokerPayNotice(interaction, '❌ Select a valid Discord user.');
     return true;
   }
 
@@ -896,20 +891,13 @@ async function handlePokerPayUserSelect(interaction) {
   );
 
   if (duplicatePlacement) {
-    await interaction.editReply({
-      content: `❌ <@${userId}> is already entered for ${duplicatePlacement.label} place.`,
-      components: []
-    });
+    await sendPokerPayNotice(interaction, `❌ <@${userId}> is already entered for ${duplicatePlacement.label} place.`);
     return true;
   }
 
   session.winners[placement.place] = userId;
+  session.activePlace = null;
   await updatePokerPayPanel(session);
-
-  await interaction.editReply({
-    content: `${placement.label} place set to <@${userId}>.`,
-    components: []
-  });
 
   return true;
 }
