@@ -1,5 +1,5 @@
 // Sleepy Bot Setup with slash + legacy message commands:
-// Slash: /sleepy, /mysleepys, /randomsleepy, /awareness, /linkwallet, /sleepyid, /grid, /wallets, /addwallet
+// Slash: /sleepy, /mysleepys, /randomsleepy, /awareness, /linkwallet, /sleepyid, /grid, /wallets, /addwallet, /pokerpay
 // Legacy: !sleepy, !mysleepys, !randomsleepy, !awareness, !linkwallet, !sleepy<id>
 
 const {
@@ -376,6 +376,76 @@ async function sendSafeInteractionError(interaction, content) {
   }
 }
 
+async function runManualAwardCommand(interaction, {
+  commandName,
+  defaultAmount = null,
+  awardLabel = 'sip'
+}) {
+  if (!canResetVespaSystem(interaction)) {
+    await interaction.reply({
+      content: `❌ You do not have permission to use \`/${commandName}\`.`,
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  const targetUser = interaction.options.getUser('user', true);
+  const amount = interaction.options.getInteger('amount') ?? defaultAmount;
+  const reason = interaction.options.getString('reason');
+
+  if (!Number.isInteger(amount) || amount < 1) {
+    await interaction.reply({
+      content: `❌ Please enter a valid $COFFEE amount for \`/${commandName}\`.`,
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const result = await dripService.manualAwardByDiscordId(targetUser.id, amount);
+    const targetName = targetUser.globalName || targetUser.username;
+    const actorName = interaction.member?.displayName || interaction.user.globalName || interaction.user.username;
+
+    await interaction.editReply({
+      embeds: [
+        dripService.buildManualAwardEmbed({
+          targetName,
+          amount,
+          result,
+          actorName,
+          reason,
+          awardLabel
+        })
+      ]
+    });
+
+    if (dripService.logChannelId) {
+      const logChannel = await client.channels.fetch(dripService.logChannelId).catch(() => null);
+      if (logChannel && logChannel.isTextBased()) {
+        await logChannel.send({
+          embeds: [
+            dripService.buildManualAwardLogEmbed({
+              targetName,
+              amount,
+              result,
+              actorName,
+              actorId: interaction.user.id,
+              targetId: targetUser.id,
+              reason,
+              awardLabel
+            })
+          ]
+        }).catch(() => null);
+      }
+    }
+  } catch (err) {
+    console.error(`Error running /${commandName}:`, err);
+    await interaction.editReply('⚠️ Error sending $COFFEE. Please try again later.');
+  }
+}
+
 // Fetch token IDs for a single wallet (Etherscan V2)
 async function fetchOwnedTokensForAddress(wallet) {
   const url = `https://api.etherscan.io/v2/api?module=account&action=tokennfttx&address=${wallet}&contractaddress=${SLEEPY_CONTRACT}&page=1&offset=1000&sort=asc&chainid=1&apikey=${ETHERSCAN_API_KEY}`;
@@ -617,6 +687,31 @@ const commandsBuilders = [
       option
         .setName('reason')
         .setDescription('Optional reason for the sip.')
+        .setMaxLength(200)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('pokerpay')
+    .setDescription('Pay a poker player DRIP $COFFEE.')
+    .addUserOption(option =>
+      option
+        .setName('user')
+        .setDescription('The Discord user to receive the poker payout.')
+        .setRequired(true)
+    )
+    .addIntegerOption(option =>
+      option
+        .setName('amount')
+        .setDescription('Amount of $COFFEE to pay.')
+        .setMinValue(1)
+        .setMaxValue(100000)
+        .setRequired(true)
+    )
+    .addStringOption(option =>
+      option
+        .setName('reason')
+        .setDescription('Optional reason for the poker payout.')
         .setMaxLength(200)
         .setRequired(false)
     ),
@@ -1179,6 +1274,13 @@ client.on('interactionCreate', async (interaction) => {
       console.error('Error running /sip:', err);
       await interaction.editReply('⚠️ Error sending $COFFEE. Please try again later.');
     }
+  }
+
+  if (commandName === 'pokerpay') {
+    await runManualAwardCommand(interaction, {
+      commandName: 'pokerpay',
+      awardLabel: 'poker payout'
+    });
   }
 
   if (commandName === 'paytest') {

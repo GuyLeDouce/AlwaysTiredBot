@@ -777,10 +777,10 @@ class DripService {
       );
   }
 
-  buildManualAwardEmbed({ targetName, amount, result, actorName, reason = null }) {
+  buildManualAwardEmbed({ targetName, amount, result, actorName, reason = null, awardLabel = 'sip' }) {
     const successLine = reason
-      ? `${actorName} manually awarded a ${amount} $COFFEE sip to ${targetName} for ${reason}.`
-      : `${actorName} manually awarded a ${amount} $COFFEE sip to ${targetName}.`;
+      ? `${actorName} manually awarded a ${amount} $COFFEE ${awardLabel} to ${targetName} for ${reason}.`
+      : `${actorName} manually awarded a ${amount} $COFFEE ${awardLabel} to ${targetName}.`;
 
     return new EmbedBuilder()
       .setColor(result.success ? 0x4a7a44 : 0xb04a3a)
@@ -799,10 +799,10 @@ class DripService {
       });
   }
 
-  buildManualAwardLogEmbed({ targetName, amount, result, actorName, actorId, targetId, reason = null }) {
+  buildManualAwardLogEmbed({ targetName, amount, result, actorName, actorId, targetId, reason = null, awardLabel = 'sip' }) {
     const successLine = reason
-      ? `<@${actorId}> manually awarded a ${amount} $COFFEE sip to <@${targetId}> for ${reason}`
-      : `<@${actorId}> manually awarded a ${amount} $COFFEE sip to <@${targetId}>`;
+      ? `<@${actorId}> manually awarded a ${amount} $COFFEE ${awardLabel} to <@${targetId}> for ${reason}`
+      : `<@${actorId}> manually awarded a ${amount} $COFFEE ${awardLabel} to <@${targetId}>`;
 
     const embed = new EmbedBuilder()
       .setColor(result.success ? 0x4a7a44 : 0xb04a3a)
