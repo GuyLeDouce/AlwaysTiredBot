@@ -481,7 +481,7 @@ function formatCoffeeAmount(tokens) {
 }
 
 function parsePokerPayCustomId(customId) {
-  const [scope, action, sessionId, place] = customId.split(':');
+  const [scope, action, sessionId, place, messageId] = customId.split(':');
   if (scope !== 'pokerpay' || !action || !sessionId) {
     return null;
   }
@@ -489,12 +489,54 @@ function parsePokerPayCustomId(customId) {
   return {
     action,
     sessionId,
-    place: place ? Number(place) : null
+    place: place ? Number(place) : null,
+    messageId: messageId || null
   };
 }
 
 function pokerPaySessionIsComplete(session) {
   return POKER_PAY_PLACEMENTS.every(entry => session.winners[entry.place]);
+}
+
+function restorePokerPaySessionFromMessage(sessionId, interaction, sourceMessage = interaction.message) {
+  const message = sourceMessage;
+  const embed = message?.embeds?.[0];
+  if (!message || !embed) {
+    return null;
+  }
+
+  const fields = embed.fields || [];
+  const createdByField = fields.find(field => field.name === 'Created By');
+  const initiatorId = createdByField?.value?.match(/<@!?(\d+)>/)?.[1];
+  if (!initiatorId) {
+    return null;
+  }
+
+  const description = embed.description || '';
+  const winners = {};
+  for (const placement of POKER_PAY_PLACEMENTS) {
+    const escapedLabel = placement.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const winnerMatch = description.match(new RegExp(`\\*\\*${escapedLabel} Place\\*\\*\\s*\\n<@!?(\\d+)>`));
+    if (winnerMatch) {
+      winners[placement.place] = winnerMatch[1];
+    }
+  }
+
+  const session = {
+    id: sessionId,
+    initiatorId,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    messageId: message.id,
+    winners,
+    payoutResults: {},
+    processing: false,
+    approved: false
+  };
+
+  pokerPaySessions.set(session.id, session);
+  console.log(`Restored /pokerpay session ${session.id} from panel message ${message.id}.`);
+  return session;
 }
 
 function buildPokerPayPanelEmbed(session) {
@@ -596,15 +638,17 @@ async function updatePokerPayPanel(session) {
 }
 
 async function startPokerPayPanel(interaction) {
-  if (!canResetVespaSystem(interaction)) {
-    await interaction.reply({
+  const canUsePokerPay = canResetVespaSystem(interaction);
+  await interaction.deferReply(canUsePokerPay ? {} : { flags: MessageFlags.Ephemeral });
+
+  if (!canUsePokerPay) {
+    await interaction.editReply({
       content: '❌ You do not have permission to use `/pokerpay`.',
-      flags: MessageFlags.Ephemeral
+      embeds: [],
+      components: []
     });
     return;
   }
-
-  await interaction.deferReply();
 
   const session = {
     id: createPokerPaySessionId(),
@@ -630,7 +674,7 @@ async function startPokerPayPanel(interaction) {
 
 function buildPokerPayUserSelectComponents(session, placement) {
   const select = new UserSelectMenuBuilder()
-    .setCustomId(`pokerpay:user:${session.id}:${placement.place}`)
+    .setCustomId(`pokerpay:user:${session.id}:${placement.place}:${session.messageId}`)
     .setPlaceholder(`Search/select ${placement.label} place player`)
     .setMinValues(1)
     .setMaxValues(1);
@@ -727,7 +771,9 @@ async function handlePokerPayButton(interaction) {
   }
 
   const parsed = parsePokerPayCustomId(interaction.customId);
-  const session = parsed ? pokerPaySessions.get(parsed.sessionId) : null;
+  const session = parsed
+    ? pokerPaySessions.get(parsed.sessionId) || restorePokerPaySessionFromMessage(parsed.sessionId, interaction)
+    : null;
   if (!parsed || !session) {
     await interaction.reply({
       content: '⚠️ This poker payout panel is no longer active. Start a new `/pokerpay`.',
@@ -793,7 +839,16 @@ async function handlePokerPayUserSelect(interaction) {
   }
 
   const parsed = parsePokerPayCustomId(interaction.customId);
-  const session = parsed ? pokerPaySessions.get(parsed.sessionId) : null;
+  let session = parsed ? pokerPaySessions.get(parsed.sessionId) : null;
+  if (!session && parsed?.messageId) {
+    const channel = interaction.channel || await client.channels.fetch(interaction.channelId).catch(() => null);
+    const panelMessage = channel?.isTextBased()
+      ? await channel.messages.fetch(parsed.messageId).catch(() => null)
+      : null;
+    session = panelMessage
+      ? restorePokerPaySessionFromMessage(parsed.sessionId, interaction, panelMessage)
+      : null;
+  }
   const placement = parsed ? getPokerPayPlacement(parsed.place) : null;
 
   if (!parsed || !session || !placement) {
