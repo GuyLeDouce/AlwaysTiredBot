@@ -294,6 +294,10 @@ const client = new Client({
   partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
 
+client.on('error', (err) => {
+  console.error('Discord client error:', err);
+});
+
 const leaderboardService = new LeaderboardService(leaderboardPool);
 const dripService = new DripService({
   apiToken: DRIP_API_TOKEN,
@@ -381,12 +385,16 @@ async function sendSafeInteractionError(interaction, content) {
       flags: MessageFlags.Ephemeral
     });
   } catch (err) {
-    if (err?.code === 10062) {
-      console.warn(`Skipped response for expired interaction: ${interaction.commandName}`);
+    if (err?.code === 10062 || err?.code === 40060) {
+      console.warn('Skipped interaction error response:', {
+        code: err.code,
+        interaction: interaction.commandName || interaction.customId || interaction.id
+      });
       return null;
     }
 
-    throw err;
+    console.error('Failed to send interaction error response:', err);
+    return null;
   }
 }
 
