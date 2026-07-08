@@ -499,28 +499,36 @@ function pokerPaySessionIsComplete(session) {
 
 function buildPokerPayPanelEmbed(session) {
   const complete = pokerPaySessionIsComplete(session);
+  const totalPayout = POKER_PAY_PLACEMENTS.reduce((sum, entry) => sum + entry.tokens, 0);
   const status = session.processing
-    ? 'Processing payouts'
+    ? 'Sending payouts...'
     : session.approved
-      ? 'Approved'
+      ? '✅ Payouts Sent'
       : complete
-        ? 'Ready for approval'
-        : 'Waiting for placements';
+        ? 'Ready to Confirm'
+        : 'Waiting for Winners';
 
   const lines = POKER_PAY_PLACEMENTS.map(entry => {
     const userId = session.winners[entry.place];
-    const winner = userId ? `<@${userId}>` : 'Not set';
-    return `${entry.label}: ${winner} - ${formatCoffeeAmount(entry.tokens)}`;
+    const winner = userId ? `<@${userId}>` : '`Not set`';
+    const result = session.payoutResults?.[entry.place];
+    const resultSuffix = result
+      ? result.success
+        ? ' ✅'
+        : ` ❌\n${String(result.reason || 'Payout failed').slice(0, 180)}`
+      : '';
+
+    return `**${entry.label} Place**\n${winner} — ${formatCoffeeAmount(entry.tokens)}${resultSuffix}`;
   });
 
   return new EmbedBuilder()
     .setColor(session.approved ? 0x4a7a44 : complete ? 0xd6a23f : 0x5c6f82)
-    .setTitle('Poker $COFFEE Payout')
-    .setDescription(lines.join('\n'))
+    .setTitle(session.approved ? '☕ Poker Payout Complete' : '☕ Poker Payout')
+    .setDescription(`Click a placement button below to add winners. Payout amounts are fixed.\n\n${lines.join('\n')}`)
     .addFields(
       {
-        name: 'Started By',
-        value: `<@${session.initiatorId}>`,
+        name: 'Total Payout',
+        value: formatCoffeeAmount(totalPayout),
         inline: true
       },
       {
@@ -529,13 +537,9 @@ function buildPokerPayPanelEmbed(session) {
         inline: true
       },
       {
-        name: 'Approval',
-        value: session.approved
-          ? `Approved by <@${session.initiatorId}>.`
-          : complete
-            ? `<@${session.initiatorId}> can approve this payout.`
-            : 'Set all five placements before approval.',
-        inline: false
+        name: 'Created By',
+        value: `<@${session.initiatorId}>`,
+        inline: true
       }
     );
 }
@@ -547,20 +551,26 @@ function buildPokerPayPanelComponents(session) {
   const placementButtons = POKER_PAY_PLACEMENTS.map(entry =>
     new ButtonBuilder()
       .setCustomId(`pokerpay:set:${session.id}:${entry.place}`)
-      .setLabel(`Set ${entry.label}`)
+      .setLabel(entry.label)
       .setStyle(session.winners[entry.place] ? ButtonStyle.Secondary : ButtonStyle.Primary)
       .setDisabled(disabled)
   );
 
   const approveButton = new ButtonBuilder()
     .setCustomId(`pokerpay:approve:${session.id}`)
-    .setLabel(session.processing ? 'Processing' : 'Approve')
+    .setLabel(session.processing ? 'Sending Payouts' : 'Confirm Payouts')
     .setStyle(ButtonStyle.Success)
     .setDisabled(disabled || !complete);
 
+  const resetButton = new ButtonBuilder()
+    .setCustomId(`pokerpay:reset:${session.id}`)
+    .setLabel('Reset')
+    .setStyle(ButtonStyle.Secondary)
+    .setDisabled(disabled || Object.keys(session.winners).length === 0);
+
   return [
     new ActionRowBuilder().addComponents(...placementButtons),
-    new ActionRowBuilder().addComponents(approveButton)
+    new ActionRowBuilder().addComponents(approveButton, resetButton)
   ];
 }
 
@@ -594,6 +604,8 @@ async function startPokerPayPanel(interaction) {
     return;
   }
 
+  await interaction.deferReply();
+
   const session = {
     id: createPokerPaySessionId(),
     initiatorId: interaction.user.id,
@@ -601,18 +613,18 @@ async function startPokerPayPanel(interaction) {
     channelId: interaction.channelId,
     messageId: null,
     winners: {},
+    payoutResults: {},
     processing: false,
     approved: false
   };
 
   pokerPaySessions.set(session.id, session);
 
-  await interaction.reply({
+  const message = await interaction.editReply({
     embeds: [buildPokerPayPanelEmbed(session)],
     components: buildPokerPayPanelComponents(session)
   });
 
-  const message = await interaction.fetchReply();
   session.messageId = message.id;
 }
 
@@ -684,6 +696,10 @@ async function approvePokerPaySession(interaction, session) {
       userId,
       ...result
     });
+    session.payoutResults[placement.place] = {
+      ...result,
+      userId
+    };
   }
 
   const announcement = await announcementChannel.send({
@@ -756,6 +772,15 @@ async function handlePokerPayButton(interaction) {
     return true;
   }
 
+  if (parsed.action === 'reset') {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    session.winners = {};
+    session.payoutResults = {};
+    await updatePokerPayPanel(session);
+    await interaction.editReply('Poker payout panel reset.');
+    return true;
+  }
+
   if (parsed.action === 'approve') {
     await approvePokerPaySession(interaction, session);
     return true;
@@ -810,13 +835,12 @@ async function handlePokerPayModalSubmit(interaction) {
     return true;
   }
 
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   session.winners[placement.place] = userId;
   await updatePokerPayPanel(session);
 
-  await interaction.reply({
-    content: `${placement.label} place set to <@${userId}>.`,
-    flags: MessageFlags.Ephemeral
-  });
+  await interaction.editReply(`${placement.label} place set to <@${userId}>.`);
 
   return true;
 }
@@ -1158,6 +1182,21 @@ client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
+
+  if (commandName === 'pokerpay') {
+    try {
+      await startPokerPayPanel(interaction);
+    } catch (err) {
+      if (err?.code === 10062) {
+        console.warn('Skipped /pokerpay response for expired interaction.');
+        return;
+      }
+
+      console.error('Error starting /pokerpay panel:', err);
+      await sendSafeInteractionError(interaction, '⚠️ Error starting the poker payout panel. Please try again later.');
+    }
+    return;
+  }
 
   if (commandName === 'linkwallet') {
     const address = interaction.options.getString('address', true).trim();
@@ -1648,10 +1687,6 @@ client.on('interactionCreate', async (interaction) => {
       console.error('Error running /sip:', err);
       await interaction.editReply('⚠️ Error sending $COFFEE. Please try again later.');
     }
-  }
-
-  if (commandName === 'pokerpay') {
-    await startPokerPayPanel(interaction);
   }
 
   if (commandName === 'paytest') {
