@@ -3,15 +3,22 @@
 // Legacy: !sleepy, !mysleepys, !randomsleepy, !awareness, !linkwallet, !sleepy<id>
 
 const {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
+  EmbedBuilder,
   GatewayIntentBits,
+  ModalBuilder,
   Partials,
   PermissionsBitField,
   REST,
   Routes,
   SlashCommandBuilder,
   Events,
-  MessageFlags
+  MessageFlags,
+  TextInputBuilder,
+  TextInputStyle
 } = require('discord.js');
 const fetch = require('node-fetch');
 const fs = require('fs');
@@ -36,6 +43,14 @@ const DRIP_TRANSFER_SENDER_ID = process.env.DRIP_TRANSFER_SENDER_ID;
 const ENABLE_MESSAGE_CONTENT_INTENT = process.env.ENABLE_MESSAGE_CONTENT_INTENT === 'true';
 const FIGHT_ALLOWED_USER_IDS = new Set(['826581856400179210', '923567278610595871']);
 const FIGHT_ALLOWED_ROLE_ID = '1404835877963825204';
+const POKER_PAY_ANNOUNCEMENT_CHANNEL_ID = '1343332384547799165';
+const POKER_PAY_PLACEMENTS = [
+  { place: 1, label: '1st', tokens: 2000 },
+  { place: 2, label: '2nd', tokens: 1250 },
+  { place: 3, label: '3rd', tokens: 750 },
+  { place: 4, label: '4th', tokens: 500 },
+  { place: 5, label: '5th', tokens: 500 }
+];
 
 // ---- Postgres Setup ----
 const pool = new Pool({
@@ -293,6 +308,7 @@ const dripService = new DripService({
   transferSenderId: DRIP_TRANSFER_SENDER_ID
 });
 const fightService = new FightService(client, leaderboardService, dripService);
+const pokerPaySessions = new Map();
 
 // Legacy JSON walletLinks as fallback
 let walletLinks = {};
@@ -444,6 +460,365 @@ async function runManualAwardCommand(interaction, {
     console.error(`Error running /${commandName}:`, err);
     await interaction.editReply('⚠️ Error sending $COFFEE. Please try again later.');
   }
+}
+
+function createPokerPaySessionId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getPokerPayPlacement(place) {
+  return POKER_PAY_PLACEMENTS.find(entry => entry.place === Number(place)) || null;
+}
+
+function formatCoffeeAmount(tokens) {
+  return `${tokens.toLocaleString('en-US')} $COFFEE`;
+}
+
+function parseDiscordUserId(value) {
+  const trimmed = String(value || '').trim();
+  const match = trimmed.match(/^(?:<@!?)?(\d{17,20})>?$/);
+  return match ? match[1] : null;
+}
+
+function parsePokerPayCustomId(customId) {
+  const [scope, action, sessionId, place] = customId.split(':');
+  if (scope !== 'pokerpay' || !action || !sessionId) {
+    return null;
+  }
+
+  return {
+    action,
+    sessionId,
+    place: place ? Number(place) : null
+  };
+}
+
+function pokerPaySessionIsComplete(session) {
+  return POKER_PAY_PLACEMENTS.every(entry => session.winners[entry.place]);
+}
+
+function buildPokerPayPanelEmbed(session) {
+  const complete = pokerPaySessionIsComplete(session);
+  const status = session.processing
+    ? 'Processing payouts'
+    : session.approved
+      ? 'Approved'
+      : complete
+        ? 'Ready for approval'
+        : 'Waiting for placements';
+
+  const lines = POKER_PAY_PLACEMENTS.map(entry => {
+    const userId = session.winners[entry.place];
+    const winner = userId ? `<@${userId}>` : 'Not set';
+    return `${entry.label}: ${winner} - ${formatCoffeeAmount(entry.tokens)}`;
+  });
+
+  return new EmbedBuilder()
+    .setColor(session.approved ? 0x4a7a44 : complete ? 0xd6a23f : 0x5c6f82)
+    .setTitle('Poker $COFFEE Payout')
+    .setDescription(lines.join('\n'))
+    .addFields(
+      {
+        name: 'Started By',
+        value: `<@${session.initiatorId}>`,
+        inline: true
+      },
+      {
+        name: 'Status',
+        value: status,
+        inline: true
+      },
+      {
+        name: 'Approval',
+        value: session.approved
+          ? `Approved by <@${session.initiatorId}>.`
+          : complete
+            ? `<@${session.initiatorId}> can approve this payout.`
+            : 'Set all five placements before approval.',
+        inline: false
+      }
+    );
+}
+
+function buildPokerPayPanelComponents(session) {
+  const complete = pokerPaySessionIsComplete(session);
+  const disabled = session.processing || session.approved;
+
+  const placementButtons = POKER_PAY_PLACEMENTS.map(entry =>
+    new ButtonBuilder()
+      .setCustomId(`pokerpay:set:${session.id}:${entry.place}`)
+      .setLabel(`Set ${entry.label}`)
+      .setStyle(session.winners[entry.place] ? ButtonStyle.Secondary : ButtonStyle.Primary)
+      .setDisabled(disabled)
+  );
+
+  const approveButton = new ButtonBuilder()
+    .setCustomId(`pokerpay:approve:${session.id}`)
+    .setLabel(session.processing ? 'Processing' : 'Approve')
+    .setStyle(ButtonStyle.Success)
+    .setDisabled(disabled || !complete);
+
+  return [
+    new ActionRowBuilder().addComponents(...placementButtons),
+    new ActionRowBuilder().addComponents(approveButton)
+  ];
+}
+
+async function updatePokerPayPanel(session) {
+  if (!session.channelId || !session.messageId) {
+    return;
+  }
+
+  const channel = await client.channels.fetch(session.channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) {
+    return;
+  }
+
+  const message = await channel.messages.fetch(session.messageId).catch(() => null);
+  if (!message) {
+    return;
+  }
+
+  await message.edit({
+    embeds: [buildPokerPayPanelEmbed(session)],
+    components: buildPokerPayPanelComponents(session)
+  });
+}
+
+async function startPokerPayPanel(interaction) {
+  if (!canResetVespaSystem(interaction)) {
+    await interaction.reply({
+      content: '❌ You do not have permission to use `/pokerpay`.',
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  const session = {
+    id: createPokerPaySessionId(),
+    initiatorId: interaction.user.id,
+    guildId: interaction.guildId,
+    channelId: interaction.channelId,
+    messageId: null,
+    winners: {},
+    processing: false,
+    approved: false
+  };
+
+  pokerPaySessions.set(session.id, session);
+
+  await interaction.reply({
+    embeds: [buildPokerPayPanelEmbed(session)],
+    components: buildPokerPayPanelComponents(session)
+  });
+
+  const message = await interaction.fetchReply();
+  session.messageId = message.id;
+}
+
+function buildPokerPayModal(session, placement) {
+  const modal = new ModalBuilder()
+    .setCustomId(`pokerpay:modal:${session.id}:${placement.place}`)
+    .setTitle(`Set ${placement.label} Place`);
+
+  const userInput = new TextInputBuilder()
+    .setCustomId('user')
+    .setLabel(`${placement.label} place user mention or ID`)
+    .setPlaceholder('@user or Discord user ID')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+
+  modal.addComponents(new ActionRowBuilder().addComponents(userInput));
+  return modal;
+}
+
+function buildPokerPayAnnouncementEmbed(session, payoutResults) {
+  const failures = payoutResults.filter(result => !result.success);
+  const lines = payoutResults.map(result => {
+    const status = result.success ? 'Paid' : 'Needs manual review';
+    return `${result.label}: <@${result.userId}> - ${formatCoffeeAmount(result.tokens)} (${status})`;
+  });
+
+  return new EmbedBuilder()
+    .setColor(failures.length > 0 ? 0xb04a3a : 0x4a7a44)
+    .setTitle('Poker Winners')
+    .setDescription(lines.join('\n'))
+    .addFields({
+      name: 'Approved By',
+      value: `<@${session.initiatorId}>`,
+      inline: false
+    });
+}
+
+async function approvePokerPaySession(interaction, session) {
+  if (!pokerPaySessionIsComplete(session)) {
+    await interaction.reply({
+      content: '❌ Set all five placements before approving this poker payout.',
+      flags: MessageFlags.Ephemeral
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const announcementChannel = await client.channels.fetch(POKER_PAY_ANNOUNCEMENT_CHANNEL_ID).catch(() => null);
+  if (!announcementChannel || !announcementChannel.isTextBased()) {
+    await interaction.editReply(`⚠️ I could not find announcement channel <#${POKER_PAY_ANNOUNCEMENT_CHANNEL_ID}>.`);
+    return;
+  }
+
+  session.processing = true;
+  await updatePokerPayPanel(session);
+
+  const payoutResults = [];
+  for (const placement of POKER_PAY_PLACEMENTS) {
+    const userId = session.winners[placement.place];
+    const result = await dripService.manualAwardByDiscordId(userId, placement.tokens)
+      .catch(error => ({
+        success: false,
+        reason: error?.message || String(error)
+      }));
+
+    payoutResults.push({
+      ...placement,
+      userId,
+      ...result
+    });
+  }
+
+  const announcement = await announcementChannel.send({
+    embeds: [buildPokerPayAnnouncementEmbed(session, payoutResults)]
+  }).catch(error => {
+    console.error('Error announcing poker payout:', error);
+    return null;
+  });
+
+  session.processing = false;
+  session.approved = true;
+  await updatePokerPayPanel(session);
+  pokerPaySessions.delete(session.id);
+
+  const failures = payoutResults.filter(result => !result.success);
+  const failureSummary = failures.length > 0
+    ? ` ${failures.length} payout(s) need manual review: ${failures.map(result => result.label).join(', ')}.`
+    : '';
+
+  if (!announcement) {
+    await interaction.editReply(`Poker payout was processed, but the announcement message could not be sent.${failureSummary}`);
+    return;
+  }
+
+  await interaction.editReply(`Poker payout approved and announced in <#${POKER_PAY_ANNOUNCEMENT_CHANNEL_ID}>.${failureSummary}`);
+}
+
+async function handlePokerPayButton(interaction) {
+  if (!interaction.customId.startsWith('pokerpay:')) {
+    return false;
+  }
+
+  const parsed = parsePokerPayCustomId(interaction.customId);
+  const session = parsed ? pokerPaySessions.get(parsed.sessionId) : null;
+  if (!parsed || !session) {
+    await interaction.reply({
+      content: '⚠️ This poker payout panel is no longer active. Start a new `/pokerpay`.',
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  if (interaction.user.id !== session.initiatorId) {
+    await interaction.reply({
+      content: `❌ Only <@${session.initiatorId}> can update or approve this poker payout.`,
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  if (session.processing || session.approved) {
+    await interaction.reply({
+      content: '⚠️ This poker payout has already been submitted.',
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  if (parsed.action === 'set') {
+    const placement = getPokerPayPlacement(parsed.place);
+    if (!placement) {
+      await interaction.reply({
+        content: '⚠️ Unknown poker placement.',
+        flags: MessageFlags.Ephemeral
+      });
+      return true;
+    }
+
+    await interaction.showModal(buildPokerPayModal(session, placement));
+    return true;
+  }
+
+  if (parsed.action === 'approve') {
+    await approvePokerPaySession(interaction, session);
+    return true;
+  }
+
+  return true;
+}
+
+async function handlePokerPayModalSubmit(interaction) {
+  if (!interaction.customId.startsWith('pokerpay:modal:')) {
+    return false;
+  }
+
+  const parsed = parsePokerPayCustomId(interaction.customId);
+  const session = parsed ? pokerPaySessions.get(parsed.sessionId) : null;
+  const placement = parsed ? getPokerPayPlacement(parsed.place) : null;
+
+  if (!parsed || !session || !placement) {
+    await interaction.reply({
+      content: '⚠️ This poker payout panel is no longer active. Start a new `/pokerpay`.',
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  if (interaction.user.id !== session.initiatorId) {
+    await interaction.reply({
+      content: `❌ Only <@${session.initiatorId}> can update this poker payout.`,
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  const userId = parseDiscordUserId(interaction.fields.getTextInputValue('user'));
+  if (!userId) {
+    await interaction.reply({
+      content: '❌ Enter a valid Discord @user mention or user ID.',
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  const duplicatePlacement = POKER_PAY_PLACEMENTS.find(entry =>
+    entry.place !== placement.place && session.winners[entry.place] === userId
+  );
+
+  if (duplicatePlacement) {
+    await interaction.reply({
+      content: `❌ <@${userId}> is already entered for ${duplicatePlacement.label} place.`,
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  session.winners[placement.place] = userId;
+  await updatePokerPayPanel(session);
+
+  await interaction.reply({
+    content: `${placement.label} place set to <@${userId}>.`,
+    flags: MessageFlags.Ephemeral
+  });
+
+  return true;
 }
 
 // Fetch token IDs for a single wallet (Etherscan V2)
@@ -693,28 +1068,7 @@ const commandsBuilders = [
 
   new SlashCommandBuilder()
     .setName('pokerpay')
-    .setDescription('Pay a poker player DRIP $COFFEE.')
-    .addUserOption(option =>
-      option
-        .setName('user')
-        .setDescription('The Discord user to receive the poker payout.')
-        .setRequired(true)
-    )
-    .addIntegerOption(option =>
-      option
-        .setName('amount')
-        .setDescription('Amount of $COFFEE to pay.')
-        .setMinValue(1)
-        .setMaxValue(100000)
-        .setRequired(true)
-    )
-    .addStringOption(option =>
-      option
-        .setName('reason')
-        .setDescription('Optional reason for the poker payout.')
-        .setMaxLength(200)
-        .setRequired(false)
-    ),
+    .setDescription('Create a poker payout panel for 1st through 5th place.'),
 
   new SlashCommandBuilder()
     .setName('paytest')
@@ -781,6 +1135,26 @@ client.once(Events.ClientReady, async (c) => {
 // ---- Slash Command Handling ----
 
 client.on('interactionCreate', async (interaction) => {
+  if (interaction.isButton()) {
+    try {
+      if (await handlePokerPayButton(interaction)) return;
+    } catch (err) {
+      console.error('Error handling poker payout button:', err);
+      await sendSafeInteractionError(interaction, '⚠️ Error updating the poker payout. Please try again later.');
+      return;
+    }
+  }
+
+  if (interaction.isModalSubmit()) {
+    try {
+      if (await handlePokerPayModalSubmit(interaction)) return;
+    } catch (err) {
+      console.error('Error handling poker payout modal:', err);
+      await sendSafeInteractionError(interaction, '⚠️ Error updating the poker payout. Please try again later.');
+      return;
+    }
+  }
+
   if (!interaction.isChatInputCommand()) return;
 
   const { commandName } = interaction;
@@ -1277,10 +1651,7 @@ client.on('interactionCreate', async (interaction) => {
   }
 
   if (commandName === 'pokerpay') {
-    await runManualAwardCommand(interaction, {
-      commandName: 'pokerpay',
-      awardLabel: 'poker payout'
-    });
+    await startPokerPayPanel(interaction);
   }
 
   if (commandName === 'paytest') {
